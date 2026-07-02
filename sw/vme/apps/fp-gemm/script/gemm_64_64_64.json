@@ -10,8 +10,8 @@
     M: 64,
     N: 64,
     K: 64,
-    TM: 16,
-    TN: 16,
+    TM: 8,
+    TN: 8,
     // Seed for reproducible random data (numpy / torch)
     seed: 42
 }

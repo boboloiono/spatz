@@ -50,6 +50,7 @@ module spatz_controller
     // OPE
     input  logic                                   ope_req_ready_i,
     input  logic                                   ope_rsp_valid_i,
+    output logic                                   ope_rsp_ready_o,
     input  vfu_rsp_t                               ope_rsp_i,
     // VLSU
     input  logic                                   vlsu_req_ready_i,
@@ -1079,6 +1080,9 @@ module spatz_controller
           spatz_req.op_tile.tn = tn_q;
           spatz_req.op_tile.tm = elen_t'(mtype_q.tm);
           spatz_req.op_tile.tk = elen_t'(mtype_q.tk);
+          // VTMV_VT/VTMV_TV body is [vstart, min(vl, ETE)-1] per spec, so vl
+          // must mirror the live CSR the same way VFU/LSU/SLD do below.
+          spatz_req.vl         = vl_q;
           spatz_req.vstart     = '0;
         end
 
@@ -1215,6 +1219,9 @@ module spatz_controller
   vfu_rsp_t vfu_rsp;
   logic     vfu_rsp_valid;
   logic     vfu_rsp_ready;
+  vfu_rsp_t ope_rsp;
+  logic     ope_rsp_valid;
+  logic     ope_rsp_ready;
 
   spill_register #(
     .T(vfu_rsp_t)
@@ -1227,6 +1234,19 @@ module spatz_controller
     .data_o (vfu_rsp                        ),
     .valid_o(vfu_rsp_valid                  ),
     .ready_i(vfu_rsp_ready                  )
+  );
+
+  spill_register #(
+    .T(vfu_rsp_t)
+  ) i_ope_scalar_response (
+    .clk_i  (clk_i                          ),
+    .rst_ni (rst_ni                         ),
+    .data_i (ope_rsp_i                      ),
+    .valid_i(ope_rsp_valid_i && ope_rsp_i.wb),
+    .ready_o(ope_rsp_ready_o                ),
+    .data_o (ope_rsp                        ),
+    .valid_o(ope_rsp_valid                  ),
+    .ready_i(ope_rsp_ready                  )
   );
 
   logic       rsp_valid_d;
@@ -1253,6 +1273,7 @@ module spatz_controller
     rsp_valid_d = '0;
 
     vfu_rsp_ready = 1'b0;
+    ope_rsp_ready = 1'b0;
 
     if (retire_csr) begin
 `ifdef MEMPOOL_SPATZ
@@ -1299,6 +1320,14 @@ module spatz_controller
 `endif
       rsp_valid_d   = 1'b1;
       vfu_rsp_ready = rsp_ready_d;
+    end else if (ope_rsp_valid) begin
+      rsp_d.id      = vfu_rsp.rd;
+      rsp_d.data    = vfu_rsp.result;
+`ifdef MEMPOOL_SPATZ
+      rsp_d.write   = 1'b1;
+`endif
+      rsp_valid_d   = 1'b1;
+      ope_rsp_ready = rsp_ready_d;
     end
   end // retire
 

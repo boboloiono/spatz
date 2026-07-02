@@ -114,9 +114,12 @@ package spatz_pkg;
 
   // Number of elements along tile edge (for TEW=32 accumulation)
   localparam int unsigned TEW    = 32;
-  localparam int unsigned TE     = VLEN/2/TEW;
-  // Maximum number of tiles across all supported TEW values (TEW=8 uses all 16)
+  localparam int unsigned TE     = 8;
   localparam int unsigned NRTILE = 16;
+  localparam int unsigned NrWordsPerTile = (TEW==32) ? (TE*TE/4) : ((TE==8)? (TE*TE/2) : TE*TE);
+
+  typedef logic [$clog2(NRTILE)-1:0]          zvt_ptile_t;
+  typedef logic [$clog2(NrWordsPerTile)-1:0]  zvt_word_t;
 
   //////////////////////
   // Type Definitions //
@@ -637,4 +640,29 @@ package spatz_pkg;
     min3 = (tmp < c) ? tmp : c;
   endfunction
 
+  function automatic void zvt_pun32_te8(
+    input  logic [3:0] tile,
+    input  logic [2:0] row,
+    input  logic [2:0] col,
+    output logic [3:0] ptile,
+    output logic [$clog2(NrWordsPerTile)-1:0] word
+  );
+    logic [3:0] major_offset;
+    logic [3:0] minor_word;
+
+    begin
+      ptile = tile + {2'b00, row[2], 1'b0} + {3'b000, col[1]};
+
+      // spec:
+      // minor_offset = (row % 2) * 8 + (col % 2) * 4;
+      // major_offset = ((row / 2) % 2) * 2 + (col / 4);
+      //
+      // word = (major_offset * 16 + minor_offset) / 4
+      major_offset = {2'b00, row[1], 1'b0} + {3'b000, col[2]};
+      minor_word   = {2'b00, row[0], 1'b0} + {3'b000, col[0]};
+
+      word = major_offset[1:0] * 4 + minor_word[1:0];
+    end
+  endfunction
+  
 endpackage : spatz_pkg

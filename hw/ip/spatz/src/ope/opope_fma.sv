@@ -19,8 +19,12 @@ module opope_fma #(
   input logic                      rst_ni,
   // Input signals
   input logic [2:0][WIDTH-1:0]     operands_i, // 3 operands
+  input  logic                  valid_i,
+  output logic                  ready_o,
   input logic                      reg_enable_i,
   // Output signals
+  output logic                  result_valid_o,
+  input  logic                  result_ready_i,
   output logic [WIDTH-1:0]         result_o
 );
 
@@ -58,6 +62,43 @@ module opope_fma #(
                                ? (NumPipeRegs / 3) // Last to get distributed regs
                                : 0); // no regs here otherwise
 
+  localparam int unsigned PIPE_LATENCY = NUM_INP_REGS + NUM_MID_REGS + NUM_OUT_REGS;
+
+  logic pipe_enable;
+
+  if (PIPE_LATENCY == 0) begin : gen_zero_latency_valid
+    assign ready_o        = result_ready_i;
+    assign result_valid_o = valid_i;
+    assign pipe_enable    = 1'b1;
+  end else begin : gen_pipelined_valid
+    logic [PIPE_LATENCY-1:0] valid_pipe_d;
+    logic [PIPE_LATENCY-1:0] valid_pipe_q;
+
+    assign ready_o        = Stallable ? (result_ready_i || !valid_pipe_q[PIPE_LATENCY-1]) : 1'b1;
+    assign pipe_enable    = Stallable ? ready_o : 1'b1;
+    assign result_valid_o = valid_pipe_q[PIPE_LATENCY-1];
+
+    always_comb begin
+      valid_pipe_d = valid_pipe_q;
+
+      if (pipe_enable) begin
+        if (PIPE_LATENCY == 1) begin
+          valid_pipe_d = valid_i & ready_o;
+        end else begin
+          valid_pipe_d = {valid_pipe_q[PIPE_LATENCY-2:0], valid_i & ready_o};
+        end
+      end
+    end
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+      if (!rst_ni) begin
+        valid_pipe_q <= '0;
+      end else begin
+        valid_pipe_q <= valid_pipe_d;
+      end
+    end
+  end
+
   // ----------------
   // Type definition
   // ----------------
@@ -80,7 +121,7 @@ module opope_fma #(
     // Internal register enable for this stage
     logic reg_ena;
     if (Stallable) begin : gen_inp_stallable
-      assign reg_ena = reg_enable_i;
+      assign reg_ena = pipe_enable;
     end else begin : gen_inp_non_stallable
       assign reg_ena = 1'b0;
     end
@@ -335,7 +376,7 @@ module opope_fma #(
     // Internal register enable for this stage
     logic reg_ena;
     if (Stallable) begin : gen_mid_stallable
-      assign reg_ena = reg_enable_i;
+      assign reg_ena = pipe_enable;
     end else begin : gen_mid_non_stallable
       assign reg_ena = 1'b0;
     end
@@ -527,7 +568,7 @@ module opope_fma #(
     logic reg_ena;
     // Enable register if pipleine ready and a valid data item is present
     if (Stallable) begin : gen_out_stallable
-      assign reg_ena = reg_enable_i;
+      assign reg_ena = pipe_enable;
     end else begin : gen_out_non_stallable
       assign reg_ena = 1'b0;
     end

@@ -61,7 +61,6 @@ def main():
     A = torch.randn((M, K), dtype=torch.float32).numpy()
     B = torch.randn((K, N), dtype=torch.float32).numpy()
     C = (torch.tensor(A) @ torch.tensor(B)).numpy()
-    checksum = C.sum(axis=1)
 
     if args.verbose:
         print(f"A {A.shape}  min={A.min():.4f}  max={A.max():.4f}")
@@ -97,9 +96,9 @@ def main():
         array_to_cstr_f32(B) + ";",
         "",
         "",
-        "// Row sums of fp32 reference C = A*B (one entry per row of C).",
-        f"static const float gemm_checksum[{M}] =",
-        array_to_cstr_f32(checksum) + ";",
+        "// C[M*N] row-major fp32 golden reference, C = A*B",
+        f'static float gemm_C_dram[{M}*{N}] __attribute__((section(".data"))) =',
+        array_to_cstr_f32(C) + ";",
         "",
     ]
 

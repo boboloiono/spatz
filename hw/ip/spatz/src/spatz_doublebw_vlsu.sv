@@ -50,13 +50,13 @@ module spatz_doublebw_vlsu
     // Interface with the Tile
     output logic        tile_wvalid_o,
     output logic [1:0]  tile_widx_o,
-    output logic [1:0]  tile_wrow_o,
+    output logic [$clog2(TE)-1:0] tile_wrow_o,
     output vrf_data_t   tile_wdata_o,
     input  logic        tile_wready_i,
 
     output logic        tile_rvalid_o,
     output logic [1:0]  tile_ridx_o,
-    output logic [1:0]  tile_rrow_o,
+    output logic [$clog2(TE)-1:0] tile_rrow_o,
     input  vrf_data_t   tile_rdata_i,
     input  logic        tile_rready_i,
     // Memory Request
@@ -221,8 +221,8 @@ module spatz_doublebw_vlsu
   typedef logic [$clog2(TileMaxRowBytes+1)-1:0] tile_byte_cnt_t;
 
   spatz_req_t      tile_req_d, tile_req_q;
-  logic [1:0]      tile_idx_d, tile_idx_q;
-  logic [1:0]      tile_row_d, tile_row_q;
+  logic [1:0]              tile_idx_d, tile_idx_q;
+  logic [$clog2(TE)-1:0]   tile_row_d, tile_row_q;
   logic [3:0]      tile_elem_bytes_d, tile_elem_bytes_q;
   tile_byte_cnt_t  tile_row_bytes_d, tile_row_bytes_q;
   tile_beat_t      tile_beat_d, tile_beat_q;

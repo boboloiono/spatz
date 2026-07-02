@@ -97,6 +97,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
 
   logic     ope_req_ready;
   logic     ope_rsp_valid;
+  logic     ope_rsp_ready;
   vfu_rsp_t ope_rsp;
 
   // Tile interface between VLSU and OPE
@@ -511,6 +512,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     // OPE
     .ope_req_ready_i  (ope_req_ready ),
     .ope_rsp_valid_i  (ope_rsp_valid   ),
+    .ope_rsp_ready_o  (ope_rsp_ready   ),
     .ope_rsp_i        (ope_rsp         ),
     // Scoreboard check
     .sb_id_i          (sb_buf_id         ),
@@ -715,7 +717,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .spatz_req_ready_o(ope_req_ready                                            ),
     // Response
     .ope_rsp_valid_o  (ope_rsp_valid                                            ),
-    .ope_rsp_ready_i  (1'b1                                                     ),
+    .ope_rsp_ready_i  (ope_rsp_ready                                            ),
     .ope_rsp_o        (ope_rsp                                                  ),
     // VRF write port (VTMV_VT: z_output → vd)
     .vrf_waddr_o      (ope_waddr_s                                             ),

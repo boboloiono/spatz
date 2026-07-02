@@ -47,46 +47,47 @@ int main(void)
     float *C    = (float *)snrt_l1alloc(M * N * sizeof(float));
     float *Cref = (float *)snrt_l1alloc(M * N * sizeof(float));
 
-    snrt_dma_start_1d(A, gemm_A_dram, M * K * sizeof(float));
-    snrt_dma_start_1d(B, gemm_B_dram, K * N * sizeof(float));
+    snrt_dma_start_1d(A,    gemm_A_dram, M * K * sizeof(float));
+    snrt_dma_start_1d(B,    gemm_B_dram, K * N * sizeof(float));
+    snrt_dma_start_1d(Cref, gemm_C_dram, M * N * sizeof(float));
     snrt_dma_wait_all();
 
-    // Scalar fp32 reference: Cref[i][j] = sum_k A[i*K+k] * B[k*N+j]
-    for (uint32_t i = 0; i < M; i++)
-        for (uint32_t j = 0; j < N; j++) {
-            float acc = 0.0f;
-            for (uint32_t k = 0; k < K; k++)
-                acc += A[i * K + k] * B[k * N + j];
-            Cref[i * N + j] = acc;
-        }
-
     memset(C, 0, M * N * sizeof(float));
+
     uint32_t t0 = get_cycle();
     gemm_fp32(C, A, B, M, N, K, TM, TN);
     uint32_t t1 = get_cycle();
+    uint32_t cycles = t1 - t0;
 
     // Element-wise error check.
-    int      n_err   = 0;
-    float    max_abs = 0.0f;
-    float    max_rel = 0.0f;
+    // fdiv.s is not supported by the Spatz FPU; use fmul.s to avoid it.
+    // Instead of rel_err = abs_err / den > tol, check abs_err > tol * den.
+    int   n_err   = 0;
+    float max_abs = 0.0f;
+    const float tol = 1.0e-3f;
 
+    uint32_t row_errs[64] = {0};
     for (uint32_t idx = 0; idx < M * N; idx++) {
-        float diff = C[idx] - Cref[idx];
-        float abs_err = diff < 0.0f ? -diff : diff;
+        float diff    = C[idx] - Cref[idx];
+        float abs_err = diff      < 0.0f ? -diff      : diff;
         float den     = Cref[idx] < 0.0f ? -Cref[idx] : Cref[idx];
         if (den < 1.0e-9f) den = 1.0e-9f;
-        float rel_err = abs_err / den;
         if (abs_err > max_abs) max_abs = abs_err;
-        if (rel_err > max_rel) max_rel = rel_err;
-        if (abs_err > 1.0e-3f && rel_err > 1.0e-3f)
+        if (abs_err > tol && abs_err > tol * den) {
+            row_errs[idx / N]++;
             n_err++;
+        }
+    }
+    for (uint32_t r = 0; r < M; r++) {
+        if (row_errs[r])
+            printf("row %u: %u errors\n", (unsigned)r, (unsigned)row_errs[r]);
     }
 
     printf("\n=== VME fp32 GEMM %ux%ux%u (TM=%u TN=%u) ===\n",
            (unsigned)M, (unsigned)N, (unsigned)K,
            (unsigned)TM, (unsigned)TN);
-    printf("MaxAbsErr: %.4e\n", (double)max_abs);
-    printf("MaxRelErr: %.4e\n", (double)max_rel);
+    printf("Cycles:    %u\n", (unsigned)cycles);
+    printf("MaxAbsErr: 0x%08x\n", *(unsigned *)&max_abs);
     printf("Errors:    %d\n",   n_err);
     printf("Status:    %s\n",   n_err == 0 ? "PASS" : "FAIL");
 

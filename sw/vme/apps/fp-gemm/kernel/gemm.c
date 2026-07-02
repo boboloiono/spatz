@@ -45,7 +45,7 @@ void gemm_fp32(float *C, const float *A, const float *B,
 {
     const uintptr_t TK = 1;
     asm volatile("vsetvli zero, %0, e32, m1, ta, ma" :: "r"((uintptr_t)TM) : "memory");
-    asm volatile("msetmtypei 1, 2" ::: "memory");
+    asm volatile("msetmtypei 1, 1" ::: "memory");
     asm volatile("msettn x0, %0" :: "r"((uintptr_t)TN) : "memory");
     asm volatile("msettm x0, %0" :: "r"((uintptr_t)TM) : "memory");
     asm volatile("msettk x0, %0" :: "r"(TK) : "memory");
