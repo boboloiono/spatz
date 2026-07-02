@@ -226,6 +226,7 @@ module spatz_doublebw_vlsu
   logic [3:0]      tile_elem_bytes_d, tile_elem_bytes_q;
   tile_byte_cnt_t  tile_row_bytes_d, tile_row_bytes_q;
   tile_beat_t      tile_beat_d, tile_beat_q;
+  tile_beat_t      tile_beat_acked_d, tile_beat_acked_q; // beats acked for current VTSE row
 
   vrf_data_t       tile_load_data_d, tile_load_data_q;
   vrf_data_t       tile_store_data_d, tile_store_data_q;
@@ -247,6 +248,7 @@ module spatz_doublebw_vlsu
   `FF(tile_elem_bytes_q, tile_elem_bytes_d, '0)
   `FF(tile_row_bytes_q,  tile_row_bytes_d,  '0)
   `FF(tile_beat_q,       tile_beat_d,       '0)
+  `FF(tile_beat_acked_q, tile_beat_acked_d, '0)
   `FF(tile_load_data_q,  tile_load_data_d,  '0)
   `FF(tile_store_data_q, tile_store_data_d, '0)
 
@@ -307,6 +309,11 @@ module spatz_doublebw_vlsu
 
   assign tile_store_last = (((tile_beat_q + 1'b1) * MemDataWidthB) >= (tile_base_byte_off + tile_row_bytes_q));
 
+  // Uses _d (not _q) so this goes true the same cycle the last ack arrives.
+  logic tile_store_all_acked;
+  assign tile_store_all_acked =
+      (tile_beat_acked_d * MemDataWidthB) >= (tile_base_byte_off + tile_row_bytes_q);
+
   always_comb begin : tile_mem_fsm
     tile_mem_state_d = tile_mem_state_q;
 
@@ -316,6 +323,7 @@ module spatz_doublebw_vlsu
     tile_elem_bytes_d = tile_elem_bytes_q;
     tile_row_bytes_d  = tile_row_bytes_q;
     tile_beat_d       = tile_beat_q;
+    tile_beat_acked_d = tile_beat_acked_q;
     tile_mem_finished   = 1'b0;
     tile_store_finished = 1'b0;
 
@@ -347,6 +355,15 @@ module spatz_doublebw_vlsu
     tile_rsp_valid = 1'b0;
     tile_rsp       = '{id: tile_req_q.id, default: '0};
 
+    // Count acks regardless of state: can arrive while still sending beats.
+`ifdef MEMPOOL_SPATZ
+    if (spatz_mem_rsp_valid_i[0] && spatz_mem_rsp_i[0].write && tile_mem_busy && (tile_req_q.op == VTSE)) begin
+`else
+    if (spatz_mem_rsp_valid_i[0] && tile_mem_busy && (tile_req_q.op == VTSE)) begin
+`endif
+      tile_beat_acked_d = tile_beat_acked_q + 1'b1;
+    end
+
     unique case (tile_mem_state_q)
 
       Tile_Idle: begin
@@ -357,6 +374,7 @@ module spatz_doublebw_vlsu
           tile_elem_bytes_d = tile_elem_bytes;
           tile_row_bytes_d  = tile_byte_cnt_t'(TE * tile_elem_bytes);
           tile_beat_d       = '0;
+          tile_beat_acked_d = '0;
           tile_load_data_d  = '0;
           tile_store_data_d = '0;
 
@@ -418,26 +436,22 @@ module spatz_doublebw_vlsu
         end
       end
 
-      // VTSE: issue one memory store beat
+      // VTSE: fire beats back-to-back, no wait per ack (safe: TCDM here is
+      // fixed-latency/in-order, MemoryResponseLatency=1).
       Tile_Store: begin
-        // if (spatz_mem_req_ready[0][0]) begin
-        if (spatz_mem_req_valid[0][0] && spatz_mem_req_ready[0][0])
-          tile_mem_state_d = Tile_Store_Wait_Rsp;
+        if (spatz_mem_req_valid[0][0] && spatz_mem_req_ready[0][0]) begin
+          if (tile_store_last) begin
+            tile_mem_state_d = Tile_Store_Wait_Rsp;
+          end else begin
+            tile_beat_d = tile_beat_q + 1'b1;
+          end
+        end
       end
 
-      // VTSE: wait for store ack
+      // VTSE: drain until all beats for this row are acked.
       Tile_Store_Wait_Rsp: begin
-  `ifdef MEMPOOL_SPATZ
-        if (spatz_mem_rsp_valid_i[0] && spatz_mem_rsp_i[0].write) begin
-  `else
-        if (spatz_mem_rsp_valid_i[0]) begin
-  `endif
-          if (tile_store_last) begin
-            tile_mem_state_d = Tile_Done;
-          end else begin
-            tile_beat_d      = tile_beat_q + 1'b1;
-            tile_mem_state_d = Tile_Store;
-          end
+        if (tile_store_all_acked) begin
+          tile_mem_state_d = Tile_Done;
         end
       end
 
