@@ -10,6 +10,16 @@
 // architectural tile state. Every access (VTMV_VT/TV, VTLE/VTSE via the VLSU
 // tile interface, VTZERO, FMA addend/result) goes through zvt_pun32_te8
 // (spatz_pkg) as the single address-generation path for the tile layout.
+//
+// MAC pipelining: the TE*TE opope_fma array is a real NumPipeRegs-deep
+// Stallable pipeline. Up to MacSlots=NumPipeRegs independent vtfmm chains
+// (one per destination tile; at most 4 exist since TEW=32 has only
+// mt0/mt4/mt8/mt12) can be in flight at once, tracked by a tag shift
+// register (mac_tag_q) that mirrors opope_fma's own internal valid-pipe
+// shift exactly. A same-cycle chain results in fma_addend_proc bypassing
+// tile_state_q with the FMA's own just-retired result, so back-to-back
+// vtfmm calls to the same tile (a K-loop) can fire every cycle a
+// different tile isn't already occupying the pipe.
 
 module spatz_ope
   import spatz_pkg::*;
@@ -56,6 +66,7 @@ module spatz_ope
 
   localparam int unsigned NumPipeRegs = 4;
   localparam int unsigned TILE_IDX_W = 2;
+  localparam int unsigned MacSlots = NumPipeRegs;
 
   spatz_req_t req       ;
   logic       req_valid ;
@@ -124,62 +135,117 @@ module spatz_ope
     return v;
   endfunction
 
-  // path_ready[GRP_MAC] = !mac_busy_q: a new vtfmm cannot dispatch until the
-  // prior one has committed, so MAC issue is not II=1 -- this wrapper does not
-  // yet hide FMA latency behind streaming A/B loads the way the O-POPE paper's
-  // steady-state schedule does.
-  spatz_req_t                  mac_req_q                  ;
-  logic [TE-1:0][TEW-1:0]     x_op_d     , x_op_q       ;
-  logic [TE-1:0][TEW-1:0]     w_op_d     , w_op_q       ;
-  logic                        mac_busy_d , mac_busy_q   ;
-  logic                        mac_fired_d, mac_fired_q  ;
-  logic                        mac_commit_valid, mac_commit_ready;
-  vfu_rsp_t                    mac_done_rsp               ;
-  logic                        mac_done_valid, mac_done_ready;
+  typedef struct packed {
+    logic [TILE_IDX_W-1:0] tile;
+    spatz_id_t             id;
+    logic [GPRWidth-1:0]   rd;
+  } mac_tag_t;
+
+  // mac_pend_q/mac_pend_busy_q is a fallback latch for a request that
+  // couldn't fire the same cycle it was accepted (VRF not ready yet, tile
+  // hazard, or pipe full). mac_eff is whichever candidate is live this
+  // cycle -- the held one if present, else the fresh incoming one -- so a
+  // brand-new request can fire the very cycle it arrives (VRF reads are
+  // 0-latency/combinational) instead of always paying one latch cycle.
+  spatz_req_t mac_pend_q;
+  logic       mac_pend_busy_d, mac_pend_busy_q;
+
+  spatz_req_t mac_eff;
+  logic       mac_eff_valid;
+  assign mac_eff       = mac_pend_busy_q ? mac_pend_q : req;
+  assign mac_eff_valid = mac_pend_busy_q || path_valid[GRP_MAC];
 
   logic mac_vrf_rdy;
-  assign mac_vrf_rdy = (!mac_req_q.use_vs2 || vrf_rvalid_i[0]) &&
-                       (!mac_req_q.use_vs1 || vrf_rvalid_i[1]);
+  assign mac_vrf_rdy = (!mac_eff.use_vs2 || vrf_rvalid_i[0]) &&
+                       (!mac_eff.use_vs1 || vrf_rvalid_i[1]);
 
   logic [TE-1:0][TE-1:0] fma_ready_a;
   logic                   fma_ready_all;
   assign fma_ready_all = &fma_ready_a;
 
-  logic mac_fire;
-  assign mac_fire = mac_busy_q && !mac_fired_q && mac_vrf_rdy && fma_ready_all;
-
   logic fma_result_valid;
 
-  assign mac_commit_valid = mac_busy_q && mac_fired_q && fma_result_valid;
+  // Per-tile inflight tracking: at most one outstanding vtfmm per
+  // destination tile at a time. mac_retire_tile/mac_tag_q are defined
+  // below; a same-cycle chain reissue to the tile retiring this cycle is
+  // not a hazard (fma_addend_proc bypasses tile_state_q for it).
+  logic [3:0] tile_inflight_d, tile_inflight_q;
+  logic [$clog2(MacSlots+1)-1:0] mac_inflight_cnt_d, mac_inflight_cnt_q;
 
-  always_comb begin : mac_handler
-    mac_busy_d  = mac_busy_q;
-    mac_fired_d = mac_fired_q;
-    x_op_d      = x_op_q;
-    w_op_d      = w_op_q;
-    path_ready[GRP_MAC] = !mac_busy_q;
+  logic [TILE_IDX_W-1:0] mac_retire_tile;
+  spatz_id_t             mac_retire_id;
+  logic [GPRWidth-1:0]   mac_retire_rd;
 
-    if (!mac_busy_q && path_valid[GRP_MAC]) begin
-      mac_busy_d  = 1'b1;
-      mac_fired_d = 1'b0;
+  logic mac_tile_hazard;
+  assign mac_tile_hazard = tile_inflight_q[mac_eff.vd[3:2]] &&
+                            !(fma_result_valid && mac_retire_tile == mac_eff.vd[3:2]);
+
+  logic mac_fire;
+  assign mac_fire = mac_eff_valid && mac_vrf_rdy && fma_ready_all &&
+                     !mac_tile_hazard && (mac_inflight_cnt_q < MacSlots);
+
+  assign path_ready[GRP_MAC] = !mac_pend_busy_q;
+
+  always_comb begin : mac_pend_handler
+    mac_pend_busy_d = mac_fire ? 1'b0 : (mac_pend_busy_q || (path_valid[GRP_MAC] && !mac_fire));
+  end : mac_pend_handler
+
+  always_comb begin : mac_inflight_update
+    tile_inflight_d    = tile_inflight_q;
+    mac_inflight_cnt_d = mac_inflight_cnt_q;
+
+    if (fma_result_valid) begin
+      tile_inflight_d[mac_retire_tile] = 1'b0;
+      mac_inflight_cnt_d = mac_inflight_cnt_d - 1;
     end
 
     if (mac_fire) begin
-      x_op_d      = vrf_rdata_i[0][TE*TEW-1:0];
-      w_op_d      = vrf_rdata_i[1][TE*TEW-1:0];
-      mac_fired_d = 1'b1;
+      tile_inflight_d[mac_eff.vd[3:2]] = 1'b1;
+      mac_inflight_cnt_d = mac_inflight_cnt_d + 1;
     end
+  end : mac_inflight_update
 
-    if (mac_commit_valid && mac_commit_ready) begin
-      mac_busy_d  = 1'b0;
-      mac_fired_d = 1'b0;
+  // Tag shift register mirroring opope_fma's own internal valid-pipe shift.
+  // Must shift exactly when opope_fma's internal pipe actually advances:
+  // fma_clk only ticks when ctrl.tile_en=1 (else this register would
+  // desync by shifting on real clk_i edges with no fma_clk edge), and even
+  // when it ticks, opope_fma's own pipe_enable=ready_o may be 0 under
+  // backpressure (result_ready_i=mac_commit_ready) -- so gate on both.
+  mac_tag_t [MacSlots-1:0] mac_tag_d, mac_tag_q;
+  logic                    mac_tag_shift_en;
+  mac_tag_t                mac_tag_new;
+
+  assign mac_tag_shift_en = ctrl.tile_en && fma_ready_all;
+  assign mac_tag_new      = mac_fire ? '{tile: mac_eff.vd[3:2], id: mac_eff.id, rd: mac_eff.rd[GPRWidth-1:0]} : '0;
+
+  always_comb begin : mac_tag_shift
+    mac_tag_d = mac_tag_q;
+    if (mac_tag_shift_en) begin
+      mac_tag_d = {mac_tag_q[MacSlots-2:0], mac_tag_new};
     end
-  end : mac_handler
+  end : mac_tag_shift
+
+  assign mac_retire_tile = mac_tag_q[MacSlots-1].tile;
+  assign mac_retire_id   = mac_tag_q[MacSlots-1].id;
+  assign mac_retire_rd   = mac_tag_q[MacSlots-1].rd;
+
+  logic     mac_commit_valid, mac_commit_ready;
+  vfu_rsp_t mac_commit_rsp;
+  vfu_rsp_t mac_done_rsp;
+  logic     mac_done_valid, mac_done_ready;
+
+  assign mac_commit_valid = fma_result_valid;
+
+  always_comb begin : mac_commit_rsp_proc
+    mac_commit_rsp    = '0;
+    mac_commit_rsp.id = mac_retire_id;
+    mac_commit_rsp.rd = mac_retire_rd;
+  end : mac_commit_rsp_proc
 
   spill_register #(.T(vfu_rsp_t)) i_mac_commit (
     .clk_i  (clk_i             ),
     .rst_ni (rst_ni            ),
-    .data_i (make_rsp(mac_req_q)),
+    .data_i (mac_commit_rsp    ),
     .valid_i(mac_commit_valid  ),
     .ready_o(mac_commit_ready  ),
     .data_o (mac_done_rsp      ),
@@ -199,11 +265,16 @@ module spatz_ope
   assign vt_tss_tile = vt_req_q.rs1[30:29];
   assign vt_tss_row  = ($clog2(TE))'(vt_req_q.rs1[23:0]);
 
-  // VT reads tile_state_q combinationally in vrf_wr_proc while MAC (via
-  // tile_state_update) may be committing an FMA result into the same
-  // physical tile/word the same cycle. Serializing VT after MAC avoids that
-  // read/write race.
-  assign path_ready[GRP_VT] = !vt_busy_q && !mac_busy_q;
+  logic mac_pipe_idle;
+  assign mac_pipe_idle = !mac_pend_busy_q && (mac_inflight_cnt_q == 0);
+
+  // VT/TV/VLSU tile access requires the MAC pipe fully drained: VT/TV read
+  // tile_state_q combinationally while an in-flight MAC could still be
+  // committing a result into the same physical tile/word. Requiring full
+  // drain (rather than proving per-tile safety while draining) trades away
+  // the previous VT/TV-overlaps-MAC-drain optimization for correctness;
+  // gemm.c never interleaves vtmv/vtse with its K-loop, so no cost there.
+  assign path_ready[GRP_VT] = !vt_busy_q && mac_pipe_idle;
 
   always_comb begin : vt_handler
     vt_busy_d        = vt_busy_q;
@@ -254,9 +325,7 @@ module spatz_ope
   logic tv_acc_wen;
   assign tv_acc_wen = tv_busy_q && tv_tss_valid_q && tv_vrf_avail && !fma_result_valid;
 
-  // TV can start once MAC has fired (VRF port [0] is free again), even while
-  // the FMA is still draining -- overlaps TV with MAC drain.
-  assign path_ready[GRP_TV] = !tv_busy_q && (!mac_busy_q || mac_fired_q);
+  assign path_ready[GRP_TV] = !tv_busy_q && mac_pipe_idle;
 
   always_comb begin : tv_handler
     tv_busy_d        = tv_busy_q;
@@ -378,8 +447,8 @@ module spatz_ope
       end
     end
 
-    if (mac_busy_q && mac_fired_q && fma_result_valid) begin
-      arch_tile = {mac_req_q.vd[3:2], 2'b00};
+    if (fma_result_valid) begin
+      arch_tile = {mac_retire_tile, 2'b00};
 
       for (int r = 0; r < TE; r++) begin
         for (int c = 0; c < TE; c++) begin
@@ -425,10 +494,10 @@ module spatz_ope
     .oup_ready_i (ope_rsp_ready_i )
   );
 
-  // Port [0] owner: MAC while waiting on VRF, then TV once MAC has fired.
+  // Port [0] owner: MAC while a candidate is live (pending or fresh), else TV.
   always_comb begin : sb_ids
-    vrf_id_o[0] = (mac_busy_q && !mac_fired_q) ? mac_req_q.id : tv_req_q.id;
-    vrf_id_o[1] = mac_req_q.id;
+    vrf_id_o[0] = mac_eff_valid ? mac_eff.id : tv_req_q.id;
+    vrf_id_o[1] = mac_eff.id;
     vrf_id_o[2] = vt_req_q.id;
   end
 
@@ -436,26 +505,14 @@ module spatz_ope
     vrf_re_o    = '0;
     vrf_raddr_o = '0;
 
-    if (mac_busy_q && !mac_fired_q) begin
-      vrf_re_o[0]    = mac_req_q.use_vs2;
-      vrf_re_o[1]    = mac_req_q.use_vs1;
-      vrf_raddr_o[0] = vrf_addr_t'(mac_req_q.vs2) << $clog2(NrWordsPerVector);
-      vrf_raddr_o[1] = vrf_addr_t'(mac_req_q.vs1) << $clog2(NrWordsPerVector);
-
-    end else begin
-      if (tv_busy_q && tv_tss_valid_q && !tv_data_latched_q) begin
-        vrf_re_o[0]    = tv_req_q.use_vs2;
-        vrf_raddr_o[0] = vrf_addr_t'(tv_req_q.vs2) << $clog2(NrWordsPerVector);
-      end
-    end
-
-    // At dispatch moment (before mac_busy_q latches): assert reads for the
-    // first cycle so mac_fire can happen without an extra idle cycle.
-    if (!mac_busy_q && path_valid[GRP_MAC]) begin
-      vrf_re_o[0]    = req.use_vs2;
-      vrf_re_o[1]    = req.use_vs1;
-      vrf_raddr_o[0] = vrf_addr_t'(req.vs2) << $clog2(NrWordsPerVector);
-      vrf_raddr_o[1] = vrf_addr_t'(req.vs1) << $clog2(NrWordsPerVector);
+    if (mac_eff_valid) begin
+      vrf_re_o[0]    = mac_eff.use_vs2;
+      vrf_re_o[1]    = mac_eff.use_vs1;
+      vrf_raddr_o[0] = vrf_addr_t'(mac_eff.vs2) << $clog2(NrWordsPerVector);
+      vrf_raddr_o[1] = vrf_addr_t'(mac_eff.vs1) << $clog2(NrWordsPerVector);
+    end else if (tv_busy_q && tv_tss_valid_q && !tv_data_latched_q) begin
+      vrf_re_o[0]    = tv_req_q.use_vs2;
+      vrf_raddr_o[0] = vrf_addr_t'(tv_req_q.vs2) << $clog2(NrWordsPerVector);
     end
   end
 
@@ -510,11 +567,8 @@ module spatz_ope
     end
   end
 
-  logic ope_idle;
-  assign ope_idle = !mac_busy_q && !vt_busy_q && !tv_busy_q && !req_valid;
-
-  assign tile_wready_o = ope_idle;
-  assign tile_rready_o = ope_idle;
+  assign tile_wready_o = mac_pipe_idle && !vt_busy_q && !tv_busy_q && !req_valid;
+  assign tile_rready_o = mac_pipe_idle && !vt_busy_q && !tv_busy_q && !req_valid;
 
   always_comb begin : tile_rdata_proc
     zvt_ptile_t ptile;
@@ -533,24 +587,14 @@ module spatz_ope
     end
   end
 
-  // Accumulator write priority: FMA result writeback > MAC wait/fire > MAC
-  // drain (mac_busy && mac_fired && !fma_result_valid, which keeps fma_clk
-  // alive so the FMA's internal valid-pipe can still shift out). Separating
-  // FMA-result from MAC-wait lets TV write the accumulator during the MAC
-  // drain phase (cycles after mac_fire until fma_result_valid).
+  // ctrl.tile_en gates fma_clk: must be 1 whenever the pipe needs to
+  // advance (a new fire this cycle) or hold entries that still need to
+  // shift/drain (mac_inflight_cnt_q != 0), including stall cycles caused
+  // by commit backpressure.
   always_comb begin : engine_ctrl
-    ctrl = '0;
-
-    if (fma_result_valid) begin
-      ctrl.tile_en = 1'b1;
-
-    end else if (mac_busy_q && !mac_fired_q) begin
-      ctrl.tile_en  = 1'b1;
-      ctrl.mac_fire = mac_fire;
-
-    end else if (mac_busy_q && mac_fired_q && !fma_result_valid) begin
-      ctrl.tile_en = 1'b1;
-    end
+    ctrl          = '0;
+    ctrl.tile_en  = mac_fire || (mac_inflight_cnt_q != 0);
+    ctrl.mac_fire = mac_fire;
   end : engine_ctrl
 
   logic fma_clk;
@@ -562,14 +606,13 @@ module spatz_ope
     .clk_o     (fma_clk     )
   );
 
-  // Bypass x_op_q/w_op_q with fresh vrf_rdata_i on the mac_fire cycle itself:
-  // x_op_q/w_op_q only latch the new data on the *next* edge, so pairing
-  // valid_i=mac_fire with the still-old x_op_q/w_op_q would feed stale
-  // operands into the FMA. The fresh data is already available combinationally
-  // the same cycle mac_fire fires, so this bypass costs no extra stall cycle.
+  // VRF reads are combinational/0-latency and re-driven every cycle
+  // mac_eff_valid is live (vrf_re_proc), so vrf_rdata_i is already the
+  // fresh operand for whichever request is firing this cycle -- no latch
+  // needed between VRF and the FMA inputs.
   logic [TE-1:0][TEW-1:0] x_op_fma, w_op_fma;
-  assign x_op_fma = mac_fire ? vrf_rdata_i[0][TE*TEW-1:0] : x_op_q;
-  assign w_op_fma = mac_fire ? vrf_rdata_i[1][TE*TEW-1:0] : w_op_q;
+  assign x_op_fma = vrf_rdata_i[0][TE*TEW-1:0];
+  assign w_op_fma = vrf_rdata_i[1][TE*TEW-1:0];
 
   always_comb begin : fma_addend_proc
     zvt_ptile_t ptile;
@@ -579,12 +622,20 @@ module spatz_ope
     fma_addend = '0;
     ptile      = '0;
     word       = '0;
-    arch_tile  = {mac_req_q.vd[3:2], 2'b00};
+    arch_tile  = {mac_eff.vd[3:2], 2'b00};
 
     for (int r = 0; r < TE; r++) begin
       for (int c = 0; c < TE; c++) begin
         zvt_pun32_te8(arch_tile, r[2:0], c[2:0], ptile, word);
-        fma_addend[r][c] = tile_zero_q[ptile][word] ? '0 : tile_state_q[ptile][word];
+        // Chain to the FMA's own result for the tile retiring this cycle
+        // instead of tile_state_q, which hasn't been written yet -- this
+        // is what lets a K-loop's next vtfmm to the same tile fire the
+        // exact cycle the previous one's result emerges.
+        if (mac_eff_valid && fma_result_valid && (mac_retire_tile == mac_eff.vd[3:2])) begin
+          fma_addend[r][c] = fma_result[r][c];
+        end else begin
+          fma_addend[r][c] = tile_zero_q[ptile][word] ? '0 : tile_state_q[ptile][word];
+        end
       end
     end
   end
@@ -614,7 +665,7 @@ module spatz_ope
         .ready_o        (fma_ready_a[row][col]                                                 ),
         .reg_enable_i   (ctrl.tile_en                                                          ),
         .result_valid_o (this_fma_valid                                                        ),
-        .result_ready_i (1'b1                                                                  ),
+        .result_ready_i (mac_commit_ready                                                      ),
         .result_o       (fma_result[row][col]                                                  )
       );
 
@@ -623,11 +674,11 @@ module spatz_ope
 
   always_ff @(posedge clk_i or negedge rst_ni) begin : seq_block
     if (!rst_ni) begin
-      mac_req_q         <= '0;
-      mac_busy_q        <= 1'b0;
-      mac_fired_q       <= 1'b0;
-      x_op_q            <= '0;
-      w_op_q            <= '0;
+      mac_pend_q         <= '0;
+      mac_pend_busy_q     <= 1'b0;
+      tile_inflight_q     <= '0;
+      mac_inflight_cnt_q  <= '0;
+      mac_tag_q           <= '0;
       vt_busy_q         <= 1'b0;
       vt_req_q          <= '0;
       vt_tss_valid_q    <= 1'b0;
@@ -639,15 +690,15 @@ module spatz_ope
       tile_state_q      <= '0;
       tile_zero_q       <= '0;
     end else begin
-      mac_busy_q   <= mac_busy_d;
-      mac_fired_q  <= mac_fired_d;
-      x_op_q       <= x_op_d;
-      w_op_q       <= w_op_d;
-      tile_state_q <= tile_state_d;
-      tile_zero_q  <= tile_zero_d;
+      tile_state_q       <= tile_state_d;
+      tile_zero_q        <= tile_zero_d;
+      tile_inflight_q     <= tile_inflight_d;
+      mac_inflight_cnt_q  <= mac_inflight_cnt_d;
+      mac_tag_q            <= mac_tag_d;
+      mac_pend_busy_q      <= mac_pend_busy_d;
 
-      if (!mac_busy_q && path_valid[GRP_MAC])
-        mac_req_q <= req;
+      if (!mac_pend_busy_q && path_valid[GRP_MAC] && !mac_fire)
+        mac_pend_q <= req;
 
       if (path_valid[GRP_VT] && path_ready[GRP_VT]) begin
         vt_req_q       <= req;

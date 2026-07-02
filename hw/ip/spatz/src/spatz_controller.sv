@@ -102,6 +102,8 @@ module spatz_controller
 
   logic spatz_req_is_tile;
   logic buffer_req_is_tile;
+  logic spatz_req_is_mac_tile;
+  logic buffer_req_is_mac_tile;
 
   assign spatz_req_is_tile =
       spatz_req.op inside {VTLE, VTSE, VTMV_VT, VTMV_TV, VTZERO, VTDISCARD,
@@ -111,28 +113,53 @@ module spatz_controller
       buffer_spatz_req.op inside {VTLE, VTSE, VTMV_VT, VTMV_TV, VTZERO, VTDISCARD,
                                   VTFMM, VTFMM_ALT, VTMMU, VTMMS};
 
+  // MAC-family tile ops (VTFMM/VTFMM_ALT/VTMMU/VTMMS): spatz_ope tracks its
+  // own per-destination-tile hazard internally (see tile_inflight_q in
+  // spatz_ope.sv) and can safely have several in flight at once. Non-MAC
+  // tile ops (VTLE/VTSE/VTMV_VT/VTMV_TV/VTZERO/VTDISCARD) still require the
+  // whole tile pipe fully drained (spatz_ope's mac_pipe_idle-gated
+  // path_ready/tile_wready_o/tile_rready_o already assume that), so they
+  // stay serialized against everything else -- only MAC-vs-MAC overlap is
+  // relaxed below.
+  assign spatz_req_is_mac_tile   = spatz_req.op inside {VTFMM, VTFMM_ALT, VTMMU, VTMMS};
+  assign buffer_req_is_mac_tile  = buffer_spatz_req.op inside {VTFMM, VTFMM_ALT, VTMMU, VTMMS};
+
   logic [NrParallelInstructions-1:0] tile_running_d, tile_running_q;
+  logic [NrParallelInstructions-1:0] tile_running_nonmac_d, tile_running_nonmac_q;
 
   `FF(tile_running_q, tile_running_d, '0)
+  `FF(tile_running_nonmac_q, tile_running_nonmac_d, '0)
 
   always_comb begin
-    tile_running_d = tile_running_q;
+    tile_running_d        = tile_running_q;
+    tile_running_nonmac_d = tile_running_nonmac_q;
 
     if (spatz_req_valid && spatz_req.ex_unit != CON && spatz_req_is_tile) begin
       tile_running_d[spatz_req.id] = 1'b1;
+      if (!spatz_req_is_mac_tile) begin
+        tile_running_nonmac_d[spatz_req.id] = 1'b1;
+      end
     end
 
-    if (vfu_rsp_valid_i)
-      tile_running_d[vfu_rsp_i.id] = 1'b0;
+    if (vfu_rsp_valid_i) begin
+      tile_running_d[vfu_rsp_i.id]        = 1'b0;
+      tile_running_nonmac_d[vfu_rsp_i.id] = 1'b0;
+    end
 
-    if (vlsu_rsp_valid_i)
-      tile_running_d[vlsu_rsp_i.id] = 1'b0;
+    if (vlsu_rsp_valid_i) begin
+      tile_running_d[vlsu_rsp_i.id]        = 1'b0;
+      tile_running_nonmac_d[vlsu_rsp_i.id] = 1'b0;
+    end
 
-    if (vsldu_rsp_valid_i)
-      tile_running_d[vsldu_rsp_i.id] = 1'b0;
+    if (vsldu_rsp_valid_i) begin
+      tile_running_d[vsldu_rsp_i.id]        = 1'b0;
+      tile_running_nonmac_d[vsldu_rsp_i.id] = 1'b0;
+    end
 
-    if (ope_rsp_valid_i)
-      tile_running_d[ope_rsp_i.id] = 1'b0;
+    if (ope_rsp_valid_i) begin
+      tile_running_d[ope_rsp_i.id]        = 1'b0;
+      tile_running_nonmac_d[ope_rsp_i.id] = 1'b0;
+    end
   end
 
   //////////
@@ -1015,7 +1042,12 @@ module spatz_controller
   assign vtl_stall   = 1'b0;
 `endif
   assign ope_stall   = ~ope_req_ready_i  & (spatz_req.ex_unit == OPE);
-  assign tile_stall = req_buffer_valid && buffer_req_is_tile && (|tile_running_q);
+  // MAC-family tile ops may overlap other in-flight MAC-family tile ops
+  // (spatz_ope pipelines them); any tile op still stalls behind a
+  // non-MAC-family tile op, and vice versa, since those need the tile pipe
+  // fully drained on both ends.
+  assign tile_stall = req_buffer_valid && buffer_req_is_tile &&
+                       (buffer_req_is_mac_tile ? (|tile_running_nonmac_q) : (|tile_running_q));
 
   // Running instructions
   logic      [NrParallelInstructions-1:0] running_insn_d, running_insn_q;
