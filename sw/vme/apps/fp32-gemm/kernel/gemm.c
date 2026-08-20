@@ -139,11 +139,11 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         // vtfmm mt0
         "li %[loop], 5\n"
         "1:\n"
-        "vle32.v v24,  (%[b1p])\n"
         "vtfmm.tvv mt0, v0, v16\n"
-        "addi %[b1p], %[b1p], 512\n"
         "vtfmm.tvv mt0, v1, v17\n"
+        "vle32.v v24,  (%[b1p])\n"
         "vtfmm.tvv mt0, v2, v18\n"
+        "addi %[b1p], %[b1p], 512\n"
         "vtfmm.tvv mt0, v3, v19\n"
         "vtfmm.tvv mt0, v4, v20\n"
         "vtfmm.tvv mt0, v5, v21\n"
@@ -194,303 +194,305 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         // K-Group N-1 & K-Group N
         // vle B0
         // vtfmm mt0
-        "vle32.v v8,  (%[a0p])\n"
         "vtfmm.tvv mt0, v0, v16\n"
-        "addi %[a0p], %[a0p], 512\n"
         "vtfmm.tvv mt0, v1, v17\n"
         "vtfmm.tvv mt0, v2, v18\n"
+        "vle32.v v8,  (%[a0p])\n"
         "vtfmm.tvv mt0, v3, v19\n"
-        "vle32.v v24,  (%[b0p])\n"
         "vtfmm.tvv mt0, v4, v20\n"
-        "addi %[b0p], %[b0p], 512\n"
+        "vle32.v v24,  (%[b0p])\n"
         "vtfmm.tvv mt0, v5, v21\n"
         "vtfmm.tvv mt0, v6, v22\n"
         "vtfmm.tvv mt0, v7, v23\n"
+        "addi %[a0p], %[a0p], 512\n"
+        "addi %[b0p], %[b0p], 512\n"
         
         // vle A0'
         // vle B0'
         // vtfmm mt0
-        "vle32.v v16,  (%[b1p])\n"
         "vtfmm.tvv mt0, v8, v24\n"
-        "addi %[b1p], %[b1p], 512\n"
         "vtfmm.tvv mt0, v9, v25\n"
         "vtfmm.tvv mt0, v10, v26\n"
         "vtfmm.tvv mt0, v11, v27\n"
+        "vle32.v v16,  (%[b1p])\n"
         "vtfmm.tvv mt0, v12, v28\n"
         "vtfmm.tvv mt0, v13, v29\n"
         "vtfmm.tvv mt0, v14, v30\n"
         "vtfmm.tvv mt0, v15, v31\n"
+        "addi %[b1p], %[b1p], 512\n"
         
         // vle B1 (reuse A0)
-        // vtfmm mt4
-        "vle32.v v24,  (%[b1p])\n"
-
-        "vtse32 %[tss0], (%[p00])\n"
-        "add %[p00], %[p00], %[c_stride]\n"
-        "addi %[tss0], %[tss0], 1\n"
+        // vtfmm mt4        
         "vtfmm.tvv mt4, v0, v16\n"
-
-        "vtse32 %[tss0], (%[p00])\n"
+        
+        "vle32.v v24,  (%[b1p])\n"
         "addi %[b1p], %[b1p], 512\n"
-        "add %[p00], %[p00], %[c_stride]\n"
-        "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v1, v17\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v2, v18\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v3, v19\n"
-
-        "vtse32 %[tss0], (%[p00])\n"
-        "add %[p00], %[p00], %[c_stride]\n"
-        "addi %[tss0], %[tss0], 1\n"
         "vtfmm.tvv mt4, v4, v20\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v5, v21\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v6, v22\n"
+        "vtse32 %[tss0], (%[p00])\n"
+        "add %[p00], %[p00], %[c_stride]\n"
+        "addi %[tss0], %[tss0], 1\n"
+
+        "vtfmm.tvv mt4, v7, v23\n"
+        "vtse32 %[tss0], (%[p00])\n"
+        "add %[p00], %[p00], %[c_stride]\n"
+        "addi %[tss0], %[tss0], 1\n"
+
 
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt4, v7, v23\n"
-
         // vle B1' (reuse A0')
         // vtfmm mt4
-        "vtse32 %[tss0], (%[p00])\n"
-        "add %[p00], %[p00], %[c_stride]\n"
-        "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v8, v24\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v9, v25\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v10, v26\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v11, v27\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v12, v28\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
+
         "vtfmm.tvv mt4, v13, v29\n"
-
         "vtse32 %[tss0], (%[p00])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt4, v14, v30\n"
 
+        "vtfmm.tvv mt4, v14, v30\n"
+        "vtse32 %[tss0], (%[p00])\n"
+        "add %[p00], %[p00], %[c_stride]\n"
+        "addi %[tss0], %[tss0], 1\n"
+        
+        "vtfmm.tvv mt4, v15, v31\n"
         "vtse32 %[tss0], (%[p00])\n"
         "vle32.v v0,  (%[a1p])\n"
         "add %[p00], %[p00], %[c_stride]\n"
         "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt4, v15, v31\n"
 
         // vle A1 (reuse B0)
         // vtfmm mt12
         // vtse mt4
 
+        "vtfmm.tvv mt12, v0,  v16\n"
+        "vtse32 %[tss0], (%[p00])\n"
+        "add %[p00], %[p00], %[c_stride]\n"
+        "addi %[tss0], %[tss0], 1\n"
+
+        "vtfmm.tvv mt12, v1,  v17\n"
         "vtse32 %[tss4], (%[p01])\n"
         "addi %[a1p], %[a1p], 512\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v0,  v16\n"
 
-        "vtse32 %[tss4], (%[p01])\n"
-        "add %[p01], %[p01], %[c_stride]\n"
-        "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v1,  v17\n"
-
-        "vtse32 %[tss4], (%[p01])\n"
-        "add %[p01], %[p01], %[c_stride]\n"
-        "addi %[tss4], %[tss4], 1\n"
         "vtfmm.tvv mt12, v2,  v18\n"
-
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
+
         "vtfmm.tvv mt12, v3,  v19\n"
-
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
+
         "vtfmm.tvv mt12, v4,  v20\n"
-
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
+
         "vtfmm.tvv mt12, v5,  v21\n"
-
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v6,  v22\n"
 
+        "vtfmm.tvv mt12, v6,  v22\n"
+        "vtse32 %[tss4], (%[p01])\n"
+        "add %[p01], %[p01], %[c_stride]\n"
+        "addi %[tss4], %[tss4], 1\n"
+
+        "vtfmm.tvv mt12, v7,  v23\n"
         "vtse32 %[tss4], (%[p01])\n"
         "vle32.v v8,  (%[a1p])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v7,  v23\n"
 
         // vle A1' (reuse B0')
         // vtfmm mt12
         // vtse mt4
 
+        "vtfmm.tvv mt12, v8,  v24\n"
         "vtse32 %[tss4], (%[p01])\n"
         "addi %[a1p], %[a1p], 512\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v8,  v24\n"
 
-        "vtse32 %[tss4], (%[p01])\n"
-        "add %[p01], %[p01], %[c_stride]\n"
-        "addi %[tss4], %[tss4], 1\n"
         "vtfmm.tvv mt12, v9,  v25\n"
-
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
+
         "vtfmm.tvv mt12, v10,  v26\n"
-
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
+
         "vtfmm.tvv mt12, v11,  v27\n"
-
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v12,  v28\n"
 
+        "vtfmm.tvv mt12, v12,  v28\n"
+        "vtse32 %[tss4], (%[p01])\n"
+        "add %[p01], %[p01], %[c_stride]\n"
+        "addi %[tss4], %[tss4], 1\n"
+
+        "vtfmm.tvv mt12, v13,  v29\n"
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
         "addi %[b0p], %[b0p], -1024\n"
-        "vtfmm.tvv mt12, v13,  v29\n"
 
+        "vtfmm.tvv mt12, v14,  v30\n"
         "vtse32 %[tss4], (%[p01])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v14,  v30\n"
 
+        "vtfmm.tvv mt12, v15,  v31\n"
         "vtse32 %[tss4], (%[p01])\n"
         "vle32.v v16,  (%[b0p])\n"
         "add %[p01], %[p01], %[c_stride]\n"
         "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v15,  v31\n"
 
+        "vtse32 %[tss4], (%[p01])\n"
+        "add %[p01], %[p01], %[c_stride]\n"
+        "addi %[tss4], %[tss4], 1\n"
+        
         // vle B0 (reuse A1)
         // vtfmm mt8
         // vtse mt12
+        "vtfmm.tvv mt8, v0,  v16\n"
         "vtse32 %[tss12], (%[p11])\n"
         "addi %[b0p], %[b0p], 512\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
-        "vtfmm.tvv mt8, v0,  v16\n"
 
-        "vtse32 %[tss12], (%[p11])\n"
-        "add %[p11], %[p11], %[c_stride]\n"
-        "addi %[tss12], %[tss12], 1\n"
         "vtfmm.tvv mt8, v1,  v17\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v2,  v18\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v3,  v19\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v4,  v20\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v5,  v21\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v6,  v22\n"
-
         "vtse32 %[tss12], (%[p11])\n"
+        "add %[p11], %[p11], %[c_stride]\n"
+
+        "vtfmm.tvv mt8, v7,  v23\n"
         "vle32.v v24,  (%[b0p])\n"
+        "addi %[tss12], %[tss12], 1\n"
+        "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
-        "vtfmm.tvv mt8, v7,  v23\n"
 
         // vle B0' (reuse A1')
         // vtfmm mt8
         // vtse mt12
 
+        "vtfmm.tvv mt8, v8,  v24\n"
         "vtse32 %[tss12], (%[p11])\n"
         "addi %[b0p], %[b0p], 512\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
-        "vtfmm.tvv mt8, v8,  v24\n"
 
-        "vtse32 %[tss12], (%[p11])\n"
-        "add %[p11], %[p11], %[c_stride]\n"
-        "addi %[tss12], %[tss12], 1\n"
         "vtfmm.tvv mt8, v9,  v25\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v10,  v26\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v11,  v27\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v12,  v28\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v13,  v29\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v14,  v30\n"
-
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+
         "vtfmm.tvv mt8, v15,  v31\n"
+        "vtse32 %[tss12], (%[p11])\n"
+        "add %[p11], %[p11], %[c_stride]\n"
+        "addi %[tss12], %[tss12], 1\n"
 
         "addi %[blocks], %[blocks], -1\n"
         "beqz %[blocks], 7f\n"
