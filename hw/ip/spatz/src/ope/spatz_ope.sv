@@ -5,21 +5,6 @@
 // Author: Pei-Yu Lin <peilin@ethz.ch>
 //
 // spatz_ope — Outer Product Engine wrapper for Spatz.
-//
-// Tile state: tile_state_q[ptile][word] is the spec-visible, Zvt-compliant
-// architectural tile state. Every access (VTMV_VT/TV, VTLE/VTSE via the VLSU
-// tile interface, VTZERO, FMA addend/result) goes through zvt_pun32_te8
-// (spatz_pkg) as the single address-generation path for the tile layout.
-//
-// MAC pipelining: the TE*TE opope_fma array is a real NumPipeRegs-deep
-// Stallable pipeline. Up to MacSlots=NumPipeRegs independent vtfmm chains
-// (one per destination tile; at most 4 exist since TEW=32 has only
-// mt0/mt4/mt8/mt12) can be in flight at once, tracked by a tag shift
-// register (mac_tag_q) that mirrors opope_fma's own internal valid-pipe
-// shift exactly. A same-cycle chain results in fma_addend_proc bypassing
-// tile_state_q with the FMA's own just-retired result, so back-to-back
-// vtfmm calls to the same tile (a K-loop) can fire every cycle a
-// different tile isn't already occupying the pipe.
 
 module spatz_ope
   import spatz_pkg::*;
@@ -49,197 +34,425 @@ module spatz_ope
   input  vrf_data_t  [1:0] vrf_rdata_i        ,
   input  logic       [1:0] vrf_rvalid_i       ,
 
-  input  logic                      tile_wvalid_i  ,
-  input  logic [$clog2(NRTILE)-1:0] tile_widx_i    ,
-  input  logic [$clog2(TE)-1:0]     tile_wrow_i    ,
-  input  vrf_data_t                 tile_wdata_i   ,
-  output logic                      tile_wready_o  ,
-
-  input  logic                      tile_rvalid_i  ,
-  input  logic [$clog2(NRTILE)-1:0] tile_ridx_i    ,
-  input  logic [$clog2(TE)-1:0]     tile_rrow_i    ,
-  output vrf_data_t                 tile_rdata_o   ,
-  output logic                      tile_rready_o
+  input  logic             tile_wvalid_i      ,
+  input  tile_w_req_t      tile_w_req_i       ,
+  output logic             tile_wready_o      ,
+  input  logic             tile_rvalid_i      ,
+  input  tile_r_req_t      tile_r_req_i       ,
+  output tile_row_t        tile_rdata_o       ,
+  output logic             tile_rready_o      
 );
 
 `include "common_cells/registers.svh"
 
   localparam int unsigned NumPipeRegs = 4;
-  localparam int unsigned TILE_IDX_W = 2;
-  localparam int unsigned MacSlots = NumPipeRegs;
+  localparam int unsigned GroupsPerEdge = (TE + CE - 1) / CE;
+  localparam int unsigned SpatialBeats = GroupsPerEdge * GroupsPerEdge;
+  localparam int unsigned SpatialBeatW = (SpatialBeats > 1) ? $clog2(SpatialBeats) : 1;
+  localparam int unsigned ReductionW = (KMAX > 1) ? $clog2(KMAX) : 1;
+  localparam int unsigned AccDepth = NrTile * SpatialBeats;
+  localparam int unsigned AccAddrW = (AccDepth > 1) ? $clog2(AccDepth) : 1;
+  localparam int unsigned MacSeqW = (NrTile > 1) ? $clog2(2 * NrTile) : 1;
 
-  spatz_req_t req       ;
-  logic       req_valid ;
-  logic       req_ready ;
+  spatz_req_t spatz_req_mac ;
+  logic       mac_req_valid ;
+  logic       mac_req_ready ;
+  
+  spatz_req_t spatz_req_tv ;
+  logic       tv_req_valid ;
+  logic       tv_req_ready ;
 
-  spill_register #(.T(spatz_req_t)) i_op_queue (
-    .clk_i  (clk_i              ),
-    .rst_ni (rst_ni             ),
-    .data_i (spatz_req_i        ),
-    .valid_i(spatz_req_valid_i  ),
-    .ready_o(spatz_req_ready_o  ),
-    .data_o (req                ),
-    .valid_o(req_valid          ),
-    .ready_i(req_ready          )
+  spatz_req_t spatz_req_vt ;
+  logic       vt_req_valid ;
+  logic       vt_req_ready ;
+
+  spatz_req_t spatz_req_simple ;
+  logic       simple_req_valid ;
+  logic       simple_req_ready ;
+
+  logic mac_in_ready;
+  logic tv_in_ready;
+  logic vt_in_ready;
+  logic simple_in_ready;
+
+  spill_register #(.T(spatz_req_t)) i_op_mac_queue (
+    .clk_i  (clk_i                                                   ),
+    .rst_ni (rst_ni                                                  ),
+    .data_i (spatz_req_i                                             ),
+    .valid_i(spatz_req_valid_i && (spatz_req_i.ex_unit == OPE) && spatz_req_i.op_ope.is_mac),
+    .ready_o(mac_in_ready                                       ),
+    .data_o (spatz_req_mac                                               ),
+    .valid_o(mac_req_valid                                               ),
+    .ready_i(mac_req_ready                                               )
   );
 
-  logic tss_valid;
-  assign tss_valid = ((req.rs1[26:24] == 3'd0) || (req.rs1[26:24] == 3'd1)) && (req.rs1[23:0] < TE);
+  spill_register #(.T(spatz_req_t)) i_op_tv_queue (
+    .clk_i  (clk_i                                                   ),
+    .rst_ni (rst_ni                                                  ),
+    .data_i (spatz_req_i                                             ),
+    .valid_i(spatz_req_valid_i && (spatz_req_i.ex_unit == OPE) && (spatz_req_i.op == VTMV_TV)),
+    .ready_o(tv_in_ready                                       ),
+    .data_o (spatz_req_tv                                               ),
+    .valid_o(tv_req_valid                                               ),
+    .ready_i(tv_req_ready                                               )
+  );
 
-  // tile_zero_q: set by VTZERO, cleared when FMA first writes result back (not
-  // at dispatch) so the VTZERO -> MAC addend-zero semantics are preserved.
-  // tile_state_q reads as 0 while the flag is set (fma_addend_proc /
-  // vrf_wr_proc / tile_rdata_proc).
-  logic [NRTILE-1:0][NrWordsPerTile-1:0][TEW-1:0] tile_state_d, tile_state_q;
-  logic [NRTILE-1:0][NrWordsPerTile-1:0]           tile_zero_d, tile_zero_q;
+  spill_register #(.T(spatz_req_t)) i_op_vt_queue (
+    .clk_i  (clk_i                                                   ),
+    .rst_ni (rst_ni                                                  ),
+    .data_i (spatz_req_i                                             ),
+    .valid_i(spatz_req_valid_i && (spatz_req_i.ex_unit == OPE) && (spatz_req_i.op == VTMV_VT)),
+    .ready_o(vt_in_ready                                       ),
+    .data_o (spatz_req_vt                                               ),
+    .valid_o(vt_req_valid                                               ),
+    .ready_i(vt_req_ready                                               )
+  );
 
-  typedef enum logic [1:0] {
-    GRP_MAC    = 2'd0,
-    GRP_VT     = 2'd1,
-    GRP_TV     = 2'd2,
-    GRP_SIMPLE = 2'd3
-  } op_grp_e;
+  spill_register #(.T(spatz_req_t)) i_op_simple_queue (
+    .clk_i  (clk_i                                                   ),
+    .rst_ni (rst_ni                                                  ),
+    .data_i (spatz_req_i                                             ),
+    .valid_i(spatz_req_valid_i && (spatz_req_i.ex_unit == OPE) && (spatz_req_i.op inside {VTZERO, VTDISCARD})),
+    .ready_o(simple_in_ready                                       ),
+    .data_o (spatz_req_simple                                               ),
+    .valid_o(simple_req_valid                                               ),
+    .ready_i(simple_req_ready                                               )
+  );
 
-  op_grp_e   op_grp;
-  logic [3:0] path_valid, path_ready;
+  always_comb begin
+    spatz_req_ready_o = 1'b0;
 
-  always_comb begin : op_grp_decode
-    unique case (req.op)
-      VTFMM, VTFMM_ALT, VTMMU, VTMMS : op_grp = GRP_MAC;
-      VTMV_VT                          : op_grp = GRP_VT;
-      VTMV_TV                          : op_grp = GRP_TV;
-      default                          : op_grp = GRP_SIMPLE;
-    endcase
+    if (spatz_req_i.ex_unit == OPE) begin
+      if (spatz_req_i.op_ope.is_mac)
+        spatz_req_ready_o = mac_in_ready;
+      else if (spatz_req_i.op == VTMV_TV)
+        spatz_req_ready_o = tv_in_ready;
+      else if (spatz_req_i.op == VTMV_VT)
+        spatz_req_ready_o = vt_in_ready;
+      else if (spatz_req_i.op inside {VTZERO, VTDISCARD})
+        spatz_req_ready_o = simple_in_ready;
+    end
   end
-
-  stream_demux #(.N_OUP(4)) i_demux (
-    .inp_valid_i(req_valid  ),
-    .inp_ready_o(req_ready  ),
-    .oup_sel_i  (op_grp     ),
-    .oup_valid_o(path_valid ),
-    .oup_ready_i(path_ready )
-  );
-
   typedef struct packed {
-    logic                     tile_en  ;
-    logic                     mac_fire ;
-  } ctrl_t;
-
-  ctrl_t ctrl;
-
-  function automatic vfu_rsp_t make_rsp(input spatz_req_t r);
-    vfu_rsp_t v;
-    v       = '0;
-    v.id    = r.id;
-    v.rd    = r.rd[GPRWidth-1:0];
-    return v;
-  endfunction
-
-  typedef struct packed {
-    logic [TILE_IDX_W-1:0] tile;
-    spatz_id_t             id;
-    logic [GPRWidth-1:0]   rd;
+    tile_id_t tile;
+    logic [SpatialBeatW-1:0] beat;
+    logic [ReductionW-1:0]   reduction;
+    // logic [7:0]              generation;
+    spatz_id_t               id;
+    logic [GPRWidth-1:0]     rd;
+    logic                    write_acc;
+    logic                    retire;
   } mac_tag_t;
 
-  // mac_pend_q/mac_pend_busy_q is a fallback latch for a request that
-  // couldn't fire the same cycle it was accepted (VRF not ready yet, tile
-  // hazard, or pipe full). mac_eff is whichever candidate is live this
-  // cycle -- the held one if present, else the fresh incoming one -- so a
-  // brand-new request can fire the very cycle it arrives (VRF reads are
-  // 0-latency/combinational) instead of always paying one latch cycle.
-  spatz_req_t mac_pend_q;
-  logic       mac_pend_busy_d, mac_pend_busy_q;
+  typedef struct packed {
+    tile_id_t tile;
+    // logic [7:0]             generation;
+    spatz_id_t              id;
+    logic [GPRWidth-1:0]    rd;
+    vreg_t                  vs1;
+    vreg_t                  vs2;
+    logic                   use_vs1;
+    logic                   use_vs2;
+    vew_e                   ew;
+    logic                   is_alt;
+    logic [MacSeqW-1:0]     seq;
+    elen_t                  tk;
+    logic [ReductionW-1:0]  reduction;
+  } mac_ctx_t;
 
-  spatz_req_t mac_eff;
-  logic       mac_eff_valid;
-  assign mac_eff       = mac_pend_busy_q ? mac_pend_q : req;
-  assign mac_eff_valid = mac_pend_busy_q || path_valid[GRP_MAC];
+  // One pending context is available for each architectural destination tile.
+  localparam int unsigned MacCtxs    = NrTile;
+  localparam int unsigned MacCtxIdxW = (MacCtxs > 1) ? $clog2(MacCtxs) : 1;
 
-  logic mac_vrf_rdy;
-  assign mac_vrf_rdy = (!mac_eff.use_vs2 || vrf_rvalid_i[0]) &&
-                       (!mac_eff.use_vs1 || vrf_rvalid_i[1]);
+  mac_ctx_t   [MacCtxs-1:0] mac_ctx_d,       mac_ctx_q;
+  logic       [MacCtxs-1:0] mac_ctx_valid_d, mac_ctx_valid_q;
+  logic [MacCtxs-1:0][SpatialBeatW-1:0] mac_ctx_beat_d, mac_ctx_beat_q;
+  logic [MacCtxIdxW-1:0]    mac_alloc_idx;
+  logic                     mac_alloc_valid;
+  logic                     mac_alloc_tile_free;
+  logic [MacCtxIdxW-1:0]    mac_sel_idx;
+  logic                     mac_sel_valid;
+  logic [MacCtxIdxW-1:0]    mac_exec_idx;
+  logic                     mac_exec_valid;
+  logic                     mac_exec_from_req;
+  logic                     mac_ctx_final_fire;
+  logic [MacSeqW-1:0]       mac_seq_head_d, mac_seq_head_q;
+  logic [MacSeqW-1:0]       mac_seq_tail_d, mac_seq_tail_q;
 
-  logic [TE-1:0][TE-1:0] fma_ready_a;
-  logic                   fma_ready_all;
-  assign fma_ready_all = &fma_ready_a;
+  mac_ctx_t mac_exec_ctx;
 
-  logic fma_result_valid;
+  logic [SpatialBeatW-1:0] mac_beat_idx;
+  localparam int unsigned GroupIdxW = (GroupsPerEdge > 1) ? $clog2(GroupsPerEdge) : 1;
+  logic [GroupIdxW-1:0] mac_group_row, mac_group_col;
 
-  // Per-tile inflight tracking: at most one outstanding vtfmm per
-  // destination tile at a time. mac_retire_tile/mac_tag_q are defined
-  // below; a same-cycle chain reissue to the tile retiring this cycle is
-  // not a hazard (fma_addend_proc bypasses tile_state_q for it).
-  logic [3:0] tile_inflight_d, tile_inflight_q;
-  logic [$clog2(MacSlots+1)-1:0] mac_inflight_cnt_d, mac_inflight_cnt_q;
+  assign mac_group_row = (GroupsPerEdge == 1) ? '0 : mac_beat_idx[SpatialBeatW-1:GroupIdxW];
+  assign mac_group_col = (GroupsPerEdge == 1) ? '0 : mac_beat_idx[GroupIdxW-1:0];
 
-  logic [TILE_IDX_W-1:0] mac_retire_tile;
-  spatz_id_t             mac_retire_id;
-  logic [GPRWidth-1:0]   mac_retire_rd;
+  logic mac_operand_word_ready;
+  assign mac_operand_word_ready = (!mac_exec_ctx.use_vs2 || vrf_rvalid_i[0]) &&
+                                  (!mac_exec_ctx.use_vs1 || vrf_rvalid_i[1]);
 
-  logic mac_tile_hazard;
-  assign mac_tile_hazard = tile_inflight_q[mac_eff.vd[3:2]] &&
-                            !(fma_result_valid && mac_retire_tile == mac_eff.vd[3:2]);
+  logic [CE-1:0][CE-1:0] fma_ready;
+
+  logic mac_result_valid;
+  logic mac_result_fire;
+  logic mac_result_forward;
+  logic fma_result_ready;
+  logic mac_result_continue_ready;
+  logic resident_drain_commit;
+  logic [NrTile-1:0][SpatialBeats-1:0] tile_inflight_d, tile_inflight_q;
+  logic [$clog2(NumPipeRegs+1)-1:0] mac_inflight_cnt_d, mac_inflight_cnt_q;
+
+  typedef enum logic [3:0] {
+    DrainNone,
+    DrainTileSwitch,
+    DrainVtseSameTile,
+    DrainVtleSameTile,
+    DrainVtmvSameTile,
+    DrainVtzeroSameTile,
+    DrainDiscard,
+    DrainAuto
+  } resident_drain_e;
+
+  logic            resident_valid_d, resident_valid_q;
+  tile_id_t        resident_tile_d, resident_tile_q;
+  logic            resident_drain_valid_d, resident_drain_valid_q;
+  resident_drain_e resident_drain_reason_d, resident_drain_reason_q;
+  logic            resident_start_fire;
+  logic            resident_hit_accept;
+  logic            resident_switch_req;
+  logic            resident_switch_wait;
+  logic            resident_switch_fire;
+
+
+  logic [MacCtxs-1:0] mac_ctx_tile_hazard;
+  logic [MacCtxs-1:0] mac_ctx_sched_ready;
+  logic [MacCtxs-1:0] mac_ctx_result_match;
+  logic [MacCtxs-1:0] mac_ctx_result_switch;
+
+  assign mac_alloc_idx = mac_req_valid ? MacCtxIdxW'(spatz_req_mac.op_ope.tss.tile_id) : '0;
+  assign mac_alloc_valid = !mac_ctx_valid_q[mac_alloc_idx] ||
+      (mac_ctx_final_fire && (mac_exec_idx == mac_alloc_idx));
+  assign mac_alloc_tile_free = mac_alloc_valid;
+
+  always_comb begin : mac_context_sched
+    tile_id_t ctx_tile;
+
+    mac_ctx_tile_hazard = '0;
+    mac_ctx_sched_ready = '0;
+    mac_ctx_result_match = '0;
+    mac_ctx_result_switch = '0;
+    mac_sel_valid       = 1'b0;
+    mac_sel_idx         = '0;
+    ctx_tile            = '0;
+
+    for (int unsigned ctx = 0; ctx < MacCtxs; ctx++) begin
+      ctx_tile = mac_ctx_q[ctx].tile;
+      mac_ctx_result_match[ctx] = mac_result_valid &&
+          !mac_tag_q[NumPipeRegs-1].write_acc &&
+          (mac_tag_q[NumPipeRegs-1].tile == ctx_tile) &&
+          (mac_tag_q[NumPipeRegs-1].beat == mac_ctx_beat_q[ctx]);
+      mac_ctx_result_switch[ctx] = mac_result_valid &&
+          !mac_tag_q[NumPipeRegs-1].write_acc &&
+          resident_valid_q && !resident_drain_valid_q &&
+          (mac_tag_q[NumPipeRegs-1].tile == resident_tile_q) &&
+          (ctx_tile != resident_tile_q);
+      mac_ctx_tile_hazard[ctx] =
+          tile_inflight_q[ctx_tile][mac_ctx_beat_q[ctx]] && !mac_ctx_result_match[ctx];
+      mac_ctx_sched_ready[ctx] =
+          mac_ctx_valid_q[ctx] &&
+          (mac_ctx_q[ctx].seq == mac_seq_head_q) &&
+          !mac_ctx_tile_hazard[ctx] &&
+          ((mac_inflight_cnt_q < NumPipeRegs) ||
+           mac_ctx_result_match[ctx] ||
+           mac_ctx_result_switch[ctx] ||
+           mac_result_fire);
+    end
+
+    // A resident partial sum must be consumed before another context can run.
+    for (int unsigned ctx = 0; ctx < MacCtxs; ctx++) begin
+      if (!mac_sel_valid && mac_ctx_sched_ready[ctx] && mac_ctx_result_match[ctx]) begin
+        mac_sel_valid = 1'b1;
+        mac_sel_idx   = MacCtxIdxW'(ctx);
+      end
+    end
+
+    for (int unsigned tile_ord = 0; tile_ord < NrTile; tile_ord++) begin
+      if (!mac_sel_valid && mac_ctx_sched_ready[tile_ord]) begin
+        mac_sel_valid = 1'b1;
+        mac_sel_idx   = MacCtxIdxW'(tile_ord);
+      end
+    end
+  end : mac_context_sched
+
+  // An empty MAC queue may launch phase zero directly from the accepted
+  // request. If either VRF operand is unavailable, the request remains in its
+  // context and follows the registered path on the next cycle.
+  assign mac_exec_from_req = !mac_sel_valid && mac_req_valid &&
+      mac_alloc_valid && mac_alloc_tile_free && !(|mac_ctx_valid_q)
+      && mac_req_ready
+      ;
+  assign mac_exec_valid = mac_sel_valid || mac_exec_from_req;
+  assign mac_exec_idx   = mac_exec_from_req ? mac_alloc_idx : mac_sel_idx;
+  assign mac_beat_idx   = mac_exec_from_req ? '0 : mac_ctx_beat_q[mac_exec_idx];
+
+  always_comb begin : mac_exec_context
+    mac_exec_ctx = mac_ctx_q[mac_exec_idx];
+    if (mac_exec_from_req) begin
+      mac_exec_ctx = '{
+        tile     : spatz_req_mac.op_ope.tss.tile_id,
+        id       : spatz_req_mac.id,
+        rd       : spatz_req_mac.rd[GPRWidth-1:0],
+        vs1      : spatz_req_mac.vs1,
+        vs2      : spatz_req_mac.vs2,
+        use_vs1  : spatz_req_mac.use_vs1,
+        use_vs2  : spatz_req_mac.use_vs2,
+        ew       : spatz_req_mac.vtype.vsew,
+        is_alt   : (spatz_req_mac.op == VTFMM_ALT),
+        seq      : mac_seq_tail_q,
+        tk       : spatz_req_mac.op_ope.tk,
+        reduction: '0
+      };
+    end
+  end : mac_exec_context
 
   logic mac_fire;
-  assign mac_fire = mac_eff_valid && mac_vrf_rdy && fma_ready_all &&
-                     !mac_tile_hazard && (mac_inflight_cnt_q < MacSlots);
+  logic mac_spatial_more;
+  logic mac_reduction_more;
+  logic mac_operation_more;
+  logic mac_commit_ready;
 
-  assign path_ready[GRP_MAC] = !mac_pend_busy_q;
+  assign mac_fire = mac_exec_valid && &fma_ready && mac_operand_word_ready &&
+      (mac_operation_more || mac_commit_ready);
+  assign mac_spatial_more = ((int'(mac_beat_idx) + 1) < SpatialBeats);
+  assign mac_reduction_more = ((int'(mac_exec_ctx.reduction) + 1) < int'(mac_exec_ctx.tk));
+  assign mac_operation_more = mac_spatial_more || mac_reduction_more;
+  assign mac_ctx_final_fire = mac_fire && !mac_operation_more;
 
-  always_comb begin : mac_pend_handler
-    mac_pend_busy_d = mac_fire ? 1'b0 : (mac_pend_busy_q || (path_valid[GRP_MAC] && !mac_fire));
-  end : mac_pend_handler
+  always_comb begin : mac_context_update
+    mac_ctx_d       = mac_ctx_q;
+    mac_ctx_valid_d = mac_ctx_valid_q;
+    mac_ctx_beat_d  = mac_ctx_beat_q;
+
+    if (mac_fire) begin
+      if (mac_spatial_more) begin
+        mac_ctx_beat_d[mac_exec_idx] = mac_beat_idx + 1'b1;
+      end else if (mac_reduction_more) begin
+        mac_ctx_beat_d[mac_exec_idx]       = '0;
+        mac_ctx_d[mac_exec_idx].reduction = mac_exec_ctx.reduction + 1'b1;
+      end else begin
+        mac_ctx_valid_d[mac_exec_idx] = 1'b0;
+        mac_ctx_beat_d[mac_exec_idx]  = '0;
+      end
+    end
+
+
+    if (mac_req_valid && mac_req_ready) begin
+      mac_ctx_d[mac_alloc_idx]       = '{
+        tile   : spatz_req_mac.op_ope.tss.tile_id,
+        id     : spatz_req_mac.id,
+        rd     : spatz_req_mac.rd[GPRWidth-1:0],
+        vs1    : spatz_req_mac.vs1,
+        vs2    : spatz_req_mac.vs2,
+        use_vs1: spatz_req_mac.use_vs1,
+        use_vs2: spatz_req_mac.use_vs2,
+        ew     : spatz_req_mac.vtype.vsew,
+        is_alt : (spatz_req_mac.op == VTFMM_ALT),
+        seq    :  mac_seq_tail_q,
+        tk       : spatz_req_mac.op_ope.tk,
+        reduction: '0
+      };
+      mac_ctx_valid_d[mac_alloc_idx] = 1'b1;
+      mac_ctx_beat_d[mac_alloc_idx]  = '0;
+      if (mac_exec_from_req && mac_fire) begin
+        mac_ctx_beat_d[mac_alloc_idx] = mac_beat_idx + 1'b1;
+      end
+    end
+  end : mac_context_update
+
+  always_comb begin : mac_sequence_update
+    mac_seq_head_d = mac_seq_head_q;
+    mac_seq_tail_d = mac_seq_tail_q;
+
+    if (mac_ctx_final_fire)
+      mac_seq_head_d = mac_seq_head_q + 1'b1;
+    if (mac_req_valid && mac_req_ready)
+      mac_seq_tail_d = mac_seq_tail_q + 1'b1;
+  end : mac_sequence_update
 
   always_comb begin : mac_inflight_update
     tile_inflight_d    = tile_inflight_q;
     mac_inflight_cnt_d = mac_inflight_cnt_q;
 
-    if (fma_result_valid) begin
-      tile_inflight_d[mac_retire_tile] = 1'b0;
+    // Each tile has four independent quadrant accumulators, so all four FMA
+    // stages may hold work for the same architectural tile.
+    if (mac_result_fire) begin
       mac_inflight_cnt_d = mac_inflight_cnt_d - 1;
+      tile_inflight_d[mac_tag_q[NumPipeRegs-1].tile][mac_tag_q[NumPipeRegs-1].beat] = 1'b0;
     end
 
     if (mac_fire) begin
-      tile_inflight_d[mac_eff.vd[3:2]] = 1'b1;
+      tile_inflight_d[mac_exec_ctx.tile][mac_beat_idx] = 1'b1;
       mac_inflight_cnt_d = mac_inflight_cnt_d + 1;
     end
   end : mac_inflight_update
 
-  // Tag shift register mirroring opope_fma's own internal valid-pipe shift.
-  // Must shift exactly when opope_fma's internal pipe actually advances:
-  // fma_clk only ticks when ctrl.tile_en=1 (else this register would
-  // desync by shifting on real clk_i edges with no fma_clk edge), and even
-  // when it ticks, opope_fma's own pipe_enable=ready_o may be 0 under
-  // backpressure (result_ready_i=mac_commit_ready) -- so gate on both.
-  mac_tag_t [MacSlots-1:0] mac_tag_d, mac_tag_q;
+  mac_tag_t [NumPipeRegs-1:0] mac_tag_d, mac_tag_q;
   logic                    mac_tag_shift_en;
   mac_tag_t                mac_tag_new;
+  logic                    mac_resident_drain;
+  logic                    mac_tag_drain;
+  logic                    mac_result_write_acc;
 
-  assign mac_tag_shift_en = ctrl.tile_en && fma_ready_all;
-  assign mac_tag_new      = mac_fire ? '{tile: mac_eff.vd[3:2], id: mac_eff.id, rd: mac_eff.rd[GPRWidth-1:0]} : '0;
+  logic mac_done;
+  assign mac_done = fma_ready[0][0];
+  assign mac_tag_shift_en = (mac_fire || (mac_inflight_cnt_q != 0)) && mac_done;
+  assign mac_tag_new = mac_fire ? '{tile: mac_exec_ctx.tile, beat: mac_beat_idx,
+                                    reduction: mac_exec_ctx.reduction,
+                                    id: mac_exec_ctx.id, rd: mac_exec_ctx.rd,
+                                    write_acc: 1'b0, retire: 1'b0} : '0;
 
   always_comb begin : mac_tag_shift
     mac_tag_d = mac_tag_q;
+    if (resident_switch_fire) begin
+      for (int unsigned stage = 0; stage < NumPipeRegs; stage++)
+        mac_tag_d[stage].write_acc = 1'b1;
+    end
     if (mac_tag_shift_en) begin
-      mac_tag_d = {mac_tag_q[MacSlots-2:0], mac_tag_new};
+      mac_tag_d = {mac_tag_d[NumPipeRegs-2:0], mac_tag_new};
     end
   end : mac_tag_shift
 
-  assign mac_retire_tile = mac_tag_q[MacSlots-1].tile;
-  assign mac_retire_id   = mac_tag_q[MacSlots-1].id;
-  assign mac_retire_rd   = mac_tag_q[MacSlots-1].rd;
-
-  logic     mac_commit_valid, mac_commit_ready;
-  vfu_rsp_t mac_commit_rsp;
-  vfu_rsp_t mac_done_rsp;
+  logic     mac_commit_valid;
+  vfu_rsp_t mac_commit_rsp, mac_done_rsp;
   logic     mac_done_valid, mac_done_ready;
 
-  assign mac_commit_valid = fma_result_valid;
+  assign mac_commit_valid = mac_ctx_final_fire;
+  assign mac_resident_drain = resident_drain_valid_q;
+  assign mac_tag_drain = mac_tag_q[NumPipeRegs-1].write_acc ||
+      (resident_switch_req && mac_result_valid &&
+       (mac_tag_q[NumPipeRegs-1].tile != mac_exec_ctx.tile));
+  assign mac_result_write_acc = mac_tag_drain ||
+      (mac_resident_drain && resident_drain_commit);
+  assign resident_drain_commit = !(resident_drain_reason_q inside {
+      DrainVtzeroSameTile, DrainDiscard});
+
+  assign mac_result_continue_ready = mac_exec_valid && mac_operand_word_ready &&
+      (mac_tag_q[NumPipeRegs-1].tile == mac_exec_ctx.tile) &&
+      (mac_tag_q[NumPipeRegs-1].beat == mac_beat_idx);
+  assign fma_result_ready = (mac_resident_drain || mac_tag_drain) ? 1'b1 :
+      (mac_tag_q[NumPipeRegs-1].write_acc ? mac_commit_ready : mac_result_continue_ready);
+  assign mac_result_fire  = mac_result_valid && fma_result_ready;
+  assign mac_result_forward = mac_fire && mac_result_fire &&
+      !mac_resident_drain && !mac_tag_drain &&
+      (mac_tag_q[NumPipeRegs-1].tile == mac_exec_ctx.tile) &&
+      (mac_tag_q[NumPipeRegs-1].beat == mac_beat_idx) &&
+      !mac_tag_q[NumPipeRegs-1].write_acc;
 
   always_comb begin : mac_commit_rsp_proc
     mac_commit_rsp    = '0;
-    mac_commit_rsp.id = mac_retire_id;
-    mac_commit_rsp.rd = mac_retire_rd;
+    mac_commit_rsp.id = mac_exec_ctx.id;
+    mac_commit_rsp.rd = mac_exec_ctx.rd;
   end : mac_commit_rsp_proc
 
   spill_register #(.T(vfu_rsp_t)) i_mac_commit (
@@ -254,44 +467,39 @@ module spatz_ope
   );
 
   spatz_req_t  vt_req_q                       ;
-  logic        vt_tss_valid_q                 ;
+  tss_t        vt_tss_q                       ;
   logic        vt_busy_d    , vt_busy_q       ;
   logic        vt_commit_valid, vt_commit_ready;
+  vfu_rsp_t    vt_commit_rsp                  ;
   vfu_rsp_t    vt_done_rsp                    ;
   logic        vt_done_valid , vt_done_ready  ;
 
-  logic [TILE_IDX_W-1:0] vt_tss_tile;
-  logic [$clog2(TE)-1:0] vt_tss_row ;
-  assign vt_tss_tile = vt_req_q.rs1[30:29];
-  assign vt_tss_row  = ($clog2(TE))'(vt_req_q.rs1[23:0]);
-
   logic mac_pipe_idle;
-  assign mac_pipe_idle = !mac_pend_busy_q && (mac_inflight_cnt_q == 0);
+  assign mac_pipe_idle = !(|mac_ctx_valid_q) && (mac_inflight_cnt_q == 0);
 
-  // VT/TV/VLSU tile access requires the MAC pipe fully drained: VT/TV read
-  // tile_state_q combinationally while an in-flight MAC could still be
-  // committing a result into the same physical tile/word. Requiring full
-  // drain (rather than proving per-tile safety while draining) trades away
-  // the previous VT/TV-overlaps-MAC-drain optimization for correctness;
-  // gemm.c never interleaves vtmv/vtse with its K-loop, so no cost there.
-  assign path_ready[GRP_VT] = !vt_busy_q && mac_pipe_idle;
-
+  // VT/TV/VLSU tile access requires the MAC pipe fully drained
   always_comb begin : vt_handler
     vt_busy_d        = vt_busy_q;
     vt_commit_valid  = 1'b0;
-    if (path_valid[GRP_VT] && path_ready[GRP_VT])
+    if (vt_req_valid && vt_req_ready)
       vt_busy_d = 1'b1;
     if (vt_busy_q) begin
-      vt_commit_valid = !vt_tss_valid_q || !vt_req_q.use_vd || vrf_wvalid_i;
+      vt_commit_valid = !vt_tss_q.tile_valid || !vt_req_q.use_vd || vrf_wvalid_i;
       if (vt_commit_valid && vt_commit_ready)
         vt_busy_d = 1'b0;
     end
   end : vt_handler
 
+  always_comb begin : vt_commit_rsp_proc
+    vt_commit_rsp    = '0;
+    vt_commit_rsp.id = vt_req_q.id;
+    vt_commit_rsp.rd = vt_req_q.rd[GPRWidth-1:0];
+  end : vt_commit_rsp_proc
+
   spill_register #(.T(vfu_rsp_t)) i_vt_commit (
     .clk_i  (clk_i            ),
     .rst_ni (rst_ni           ),
-    .data_i (make_rsp(vt_req_q)),
+    .data_i (vt_commit_rsp    ),
     .valid_i(vt_commit_valid  ),
     .ready_o(vt_commit_ready  ),
     .data_o (vt_done_rsp      ),
@@ -300,20 +508,13 @@ module spatz_ope
   );
 
   spatz_req_t  tv_req_q                       ;
-  logic        tv_tss_valid_q                 ;
+  tss_t        tv_tss_q                       ;
   logic        tv_busy_d    , tv_busy_q       ;
   logic        tv_commit_valid, tv_commit_ready;
+  vfu_rsp_t    tv_commit_rsp                  ;
   vfu_rsp_t    tv_done_rsp                    ;
   logic        tv_done_valid , tv_done_ready  ;
 
-  logic [TILE_IDX_W-1:0] tv_tss_tile;
-  logic [$clog2(TE)-1:0] tv_tss_row ;
-  assign tv_tss_tile = tv_req_q.rs1[30:29];
-  assign tv_tss_row  = ($clog2(TE))'(tv_req_q.rs1[23:0]);
-
-  // VRF data is latched (tv_data_q) on first rvalid so that if
-  // fma_result_valid blocks the acc write for one cycle, TV can retry
-  // without re-reading the VRF.
   vrf_data_t tv_data_q;
   logic      tv_data_latched_q;
   vrf_data_t tv_vrf_data;
@@ -323,26 +524,31 @@ module spatz_ope
   assign tv_vrf_data  = tv_data_latched_q ? tv_data_q : vrf_rdata_i[0];
 
   logic tv_acc_wen;
-  assign tv_acc_wen = tv_busy_q && tv_tss_valid_q && tv_vrf_avail && !fma_result_valid;
-
-  assign path_ready[GRP_TV] = !tv_busy_q && mac_pipe_idle;
+  assign tv_acc_wen = tv_busy_q && tv_tss_q.tile_valid && tv_vrf_avail &&
+                      !mac_result_valid && !tile_wvalid_i;
 
   always_comb begin : tv_handler
     tv_busy_d        = tv_busy_q;
     tv_commit_valid  = 1'b0;
-    if (path_valid[GRP_TV] && path_ready[GRP_TV])
+    if (tv_req_valid && tv_req_ready)
       tv_busy_d = 1'b1;
     if (tv_busy_q) begin
-      tv_commit_valid = !tv_tss_valid_q || !tv_req_q.use_vs2 || tv_acc_wen;
+      tv_commit_valid = !tv_tss_q.tile_valid || !tv_req_q.use_vs2 || tv_acc_wen;
       if (tv_commit_valid && tv_commit_ready)
         tv_busy_d = 1'b0;
     end
   end : tv_handler
 
+  always_comb begin : tv_commit_rsp_proc
+    tv_commit_rsp    = '0;
+    tv_commit_rsp.id = tv_req_q.id;
+    tv_commit_rsp.rd = tv_req_q.rd[GPRWidth-1:0];
+  end : tv_commit_rsp_proc
+
   spill_register #(.T(vfu_rsp_t)) i_tv_commit (
     .clk_i  (clk_i            ),
     .rst_ni (rst_ni           ),
-    .data_i (make_rsp(tv_req_q)),
+    .data_i (tv_commit_rsp    ),
     .valid_i(tv_commit_valid  ),
     .ready_o(tv_commit_ready  ),
     .data_o (tv_done_rsp      ),
@@ -350,134 +556,378 @@ module spatz_ope
     .ready_i(tv_done_ready    )
   );
 
-  vfu_rsp_t simple_done_rsp                      ;
+  vfu_rsp_t simple_commit_rsp, simple_done_rsp   ;
   logic     simple_done_valid, simple_done_ready ;
   logic     simple_commit_ready                  ;
-  assign    path_ready[GRP_SIMPLE] = simple_commit_ready;
+  logic     simple_acc_ready                     ;
+  logic [NrTile-1:0] vtzero_tile_busy;
 
-  logic [TE-1:0][TE-1:0][TEW-1:0] fma_addend;
-  logic [TE-1:0][TE-1:0][TEW-1:0] fma_result        ;
-  logic [TE-1:0][TE-1:0]          fma_result_valid_a ;
+  always_comb begin : vtzero_tile_busy_proc
+    vtzero_tile_busy = '0;
 
-  assign fma_result_valid = fma_result_valid_a[0][0];
+    for (int unsigned ctx = 0; ctx < MacCtxs; ctx++) begin
+      if (mac_ctx_valid_q[ctx])
+        vtzero_tile_busy[mac_ctx_q[ctx].tile] = 1'b1;
+    end
+    for (int unsigned tile = 0; tile < NrTile; tile++) begin
+      if (|tile_inflight_q[tile])
+        vtzero_tile_busy[tile] = 1'b1;
+    end
+
+    if (vt_busy_q && vt_tss_q.tile_valid)
+      vtzero_tile_busy[vt_tss_q.tile_id] = 1'b1;
+    if (tv_busy_q && tv_tss_q.tile_valid)
+      vtzero_tile_busy[tv_tss_q.tile_id] = 1'b1;
+    if (tile_rvalid_i)
+      vtzero_tile_busy[tile_id_t'(tile_r_req_i.idx / NumAccPerTile)] = 1'b1;
+    if (tile_wvalid_i)
+      vtzero_tile_busy[tile_id_t'(tile_w_req_i.idx / NumAccPerTile)] = 1'b1;
+  end : vtzero_tile_busy_proc
+
+  always_comb begin : simple_acc_ready_proc
+    simple_acc_ready = 1'b0;
+    if (spatz_req_simple.op == VTZERO)
+      simple_acc_ready = !resident_drain_valid_q &&
+          (!resident_valid_q ||
+           (spatz_req_simple.op_ope.tss.tile_id != resident_tile_q));
+    else if (spatz_req_simple.op == VTDISCARD)
+      simple_acc_ready = !resident_valid_q && !resident_drain_valid_q &&
+                         mac_pipe_idle && !vt_busy_q && !tv_busy_q &&
+                         !tile_rvalid_i && !tile_wvalid_i;
+  end : simple_acc_ready_proc
+
+  always_comb begin : req_ready_proc
+    
+    mac_req_ready    = 1'b0;
+    vt_req_ready     = 1'b0;
+    tv_req_ready     = 1'b0;
+    simple_req_ready = 1'b0;
+    
+    /*
+    * Preserve OPE command ordering.
+    * Simple commands such as VTZERO/VTDISCARD must complete
+    * before a younger MAC may start.
+    */
+    if (simple_req_valid)
+      simple_req_ready = simple_commit_ready && simple_acc_ready;
+    else if (vt_req_valid)
+      vt_req_ready = !vt_busy_q && !resident_drain_valid_q &&
+                  (!resident_valid_q || !spatz_req_vt.op_ope.tss.tile_valid ||
+                   (spatz_req_vt.op_ope.tss.tile_id != resident_tile_q));
+    else if (tv_req_valid)
+      tv_req_ready = !tv_busy_q && !resident_drain_valid_q &&
+                  (!resident_valid_q || !spatz_req_tv.op_ope.tss.tile_valid ||
+                   (spatz_req_tv.op_ope.tss.tile_id != resident_tile_q));
+    else if (mac_req_valid)
+      mac_req_ready = (spatz_req_mac.op_ope.tk == 1) && !resident_drain_valid_q &&
+                  mac_alloc_valid && mac_alloc_tile_free;
+  end : req_ready_proc
+
+  assign resident_start_fire = mac_fire && !resident_valid_q &&
+      (mac_beat_idx == '0);
+  assign resident_hit_accept = mac_req_valid && mac_req_ready && resident_valid_q &&
+      (spatz_req_mac.op_ope.tss.tile_id == resident_tile_q);
+  assign resident_switch_req = mac_exec_valid && resident_valid_q &&
+      !resident_drain_valid_q && (mac_exec_ctx.tile != resident_tile_q);
+  assign resident_switch_wait = resident_switch_req;
+  assign resident_switch_fire = resident_switch_req && mac_fire;
+
+  always_comb begin : resident_state_update
+    logic start_drain;
+    resident_drain_e start_reason;
+    tile_id_t tile_read_id;
+    tile_id_t tile_write_id;
+
+    resident_valid_d       = resident_valid_q;
+    resident_tile_d        = resident_tile_q;
+    resident_drain_valid_d = resident_drain_valid_q;
+    resident_drain_reason_d = resident_drain_reason_q;
+
+    start_drain = 1'b0;
+    start_reason = DrainNone;
+    tile_read_id = tile_id_t'(tile_r_req_i.idx / NumAccPerTile);
+    tile_write_id = tile_id_t'(tile_w_req_i.idx / NumAccPerTile);
+
+    if (resident_valid_q && !resident_drain_valid_q &&
+        !(|mac_ctx_valid_q) && (mac_inflight_cnt_q != 0)) begin
+      if (simple_req_valid && (spatz_req_simple.op == VTDISCARD)) begin
+        start_drain = 1'b1;
+        start_reason = DrainDiscard;
+      end else if (simple_req_valid && (spatz_req_simple.op == VTZERO) &&
+                   (spatz_req_simple.op_ope.tss.tile_id == resident_tile_q)) begin
+        start_drain = 1'b1;
+        start_reason = DrainVtzeroSameTile;
+      end else if (tile_rvalid_i && (tile_read_id == resident_tile_q)) begin
+        start_drain = 1'b1;
+        start_reason = DrainVtseSameTile;
+      end else if (tile_wvalid_i && (tile_write_id == resident_tile_q)) begin
+        start_drain = 1'b1;
+        start_reason = DrainVtleSameTile;
+      end else if (vt_req_valid && spatz_req_vt.op_ope.tss.tile_valid &&
+                   (spatz_req_vt.op_ope.tss.tile_id == resident_tile_q)) begin
+        start_drain = 1'b1;
+        start_reason = DrainVtmvSameTile;
+      end else if (tv_req_valid && spatz_req_tv.op_ope.tss.tile_valid &&
+                   (spatz_req_tv.op_ope.tss.tile_id == resident_tile_q)) begin
+        start_drain = 1'b1;
+        start_reason = DrainVtmvSameTile;
+      end
+    end
+
+    if (start_drain) begin
+      resident_drain_valid_d = 1'b1;
+      resident_drain_reason_d = start_reason;
+    end
+
+    if (resident_start_fire) begin
+      resident_valid_d = 1'b1;
+      resident_tile_d = mac_exec_ctx.tile;
+    end
+    if (resident_switch_fire) begin
+      resident_valid_d = 1'b1;
+      resident_tile_d = mac_exec_ctx.tile;
+    end
+
+    if (mac_result_fire && resident_drain_valid_q &&
+        (mac_inflight_cnt_q == 1)) begin
+      resident_valid_d = 1'b0;
+      resident_drain_valid_d = 1'b0;
+      resident_drain_reason_d = DrainNone;
+    end
+  end : resident_state_update
+
+  logic [CE-1:0][CE-1:0][TEW-1:0] fma_addend;
+  logic [CE-1:0][CE-1:0][TEW-1:0] fma_result;
+  logic [CE-1:0][CE-1:0] fma_result_valid;
+  logic [CE-1:0][CE-1:0][AccDepth-1:0][TEW-1:0] acc_mem_rdata;
+  logic [CE-1:0][CE-1:0][SpatialBeats-1:0][TEW-1:0] acc_wdata;
+  logic [CE-1:0][CE-1:0] acc_wen;
+  logic [AccAddrW-1:0] acc_waddr;
+  logic acc_ext_ld, acc_flush;
+  logic [NrTile-1:0][SpatialBeats-1:0] acc_zero_d, acc_zero_q;
+  logic [NrTile-1:0][TE-1:0][TE-1:0][TEW-1:0] acc_rdata;
+  logic acc_tile_read_ready, acc_tile_write_ready;
+  logic [NrTile-1:0] mac_acc_rd_req, mac_acc_wr_req, vt_acc_rd_req, tv_acc_wr_req, acc_zero_wr_req;
+
+  assign mac_result_valid = fma_result_valid[0][0];
+
+  always_comb begin : simple_commit_rsp_proc
+    simple_commit_rsp    = '0;
+    simple_commit_rsp.id = spatz_req_simple.id;
+    simple_commit_rsp.rd = spatz_req_simple.rd[GPRWidth-1:0];
+  end : simple_commit_rsp_proc
 
   spill_register #(.T(vfu_rsp_t)) i_simple_commit (
-    .clk_i  (clk_i                  ),
-    .rst_ni (rst_ni                 ),
-    .data_i (make_rsp(req)          ),
-    .valid_i(path_valid[GRP_SIMPLE] ),
-    .ready_o(simple_commit_ready    ),
-    .data_o (simple_done_rsp        ),
-    .valid_o(simple_done_valid      ),
-    .ready_i(simple_done_ready      )
+    .clk_i  (clk_i                                    ),
+    .rst_ni (rst_ni                                   ),
+    .data_i (simple_commit_rsp                        ),
+    .valid_i(simple_req_valid && simple_acc_ready     ),
+    .ready_o(simple_commit_ready                      ),
+    .data_o (simple_done_rsp                          ),
+    .valid_o(simple_done_valid                        ),
+    .ready_i(simple_done_ready                        )
   );
 
-  always_comb begin : tile_state_update
-    zvt_ptile_t ptile;
-    zvt_word_t  word;
+  always_comb begin : acc_req_proc
+    mac_acc_rd_req  = '0;
+    mac_acc_wr_req  = '0;
+    vt_acc_rd_req   = '0;
+    tv_acc_wr_req   = '0;
+    acc_zero_wr_req = '0;
 
-    logic [3:0] arch_tile;
-    logic [2:0] idx;
-    logic [2:0] row_i;
-    logic [2:0] col_i;
+    if (mac_exec_valid && (mac_exec_ctx.reduction == '0)
+        && (!resident_valid_q || resident_switch_wait)
+       )
+      mac_acc_rd_req[mac_exec_ctx.tile] = 1'b1;
+    if (mac_result_valid && mac_result_write_acc)
+      mac_acc_wr_req[mac_tag_q[NumPipeRegs-1].tile] = 1'b1;
+    if (vt_busy_q && vt_tss_q.tile_valid)
+      vt_acc_rd_req[vt_tss_q.tile_id] = 1'b1;
+    if (tv_busy_q && tv_tss_q.tile_valid && tv_vrf_avail)
+      tv_acc_wr_req[tv_tss_q.tile_id] = 1'b1;
+    if (simple_req_valid && simple_req_ready && (spatz_req_simple.op == VTZERO))
+      acc_zero_wr_req[spatz_req_simple.op_ope.tss.tile_id] = 1'b1;
+  end
+
+  assign acc_tile_read_ready =
+      !mac_acc_rd_req[tile_id_t'(tile_r_req_i.idx / NumAccPerTile)] &&
+      !mac_acc_wr_req[tile_id_t'(tile_r_req_i.idx / NumAccPerTile)] &&
+      !vt_acc_rd_req[tile_id_t'(tile_r_req_i.idx / NumAccPerTile)] &&
+      !tv_acc_wr_req[tile_id_t'(tile_r_req_i.idx / NumAccPerTile)] &&
+      !acc_zero_wr_req[tile_id_t'(tile_r_req_i.idx / NumAccPerTile)];
+  assign acc_tile_write_ready =
+      !mac_acc_rd_req[tile_id_t'(tile_w_req_i.idx / NumAccPerTile)] &&
+      !(|mac_acc_wr_req) &&
+      !(|tv_acc_wr_req) &&
+      !acc_zero_wr_req[tile_id_t'(tile_w_req_i.idx / NumAccPerTile)];
+  assign tile_rready_o = acc_tile_read_ready && !resident_drain_valid_q &&
+      (!resident_valid_q ||
+       (tile_id_t'(tile_r_req_i.idx / NumAccPerTile) != resident_tile_q));
+  assign tile_wready_o = acc_tile_write_ready && !tile_rvalid_i
+      && !resident_drain_valid_q &&
+      (!resident_valid_q ||
+       (tile_id_t'(tile_w_req_i.idx / NumAccPerTile) != resident_tile_q))
+      ;
+
+  for (genvar tile = 0; tile < NrTile; tile++) begin : gen_tile_view
+    for (genvar row = 0; row < TE; row++) begin : gen_tile_view_row
+      for (genvar col = 0; col < TE; col++) begin : gen_tile_view_col
+        assign acc_rdata[tile][row][col] =
+            acc_zero_q[tile][(row / CE) * GroupsPerEdge + (col / CE)] ? '0 :
+                acc_mem_rdata[row % CE][col % CE]
+                             [tile * SpatialBeats + (row / CE) * GroupsPerEdge + (col / CE)];
+      end : gen_tile_view_col
+    end : gen_tile_view_row
+  end : gen_tile_view
+
+  always_comb begin : acc_access_proc
+    logic [$clog2(TE)-1:0] idx;
+    logic [$clog2(TE)-1:0] row_i;
+    logic [$clog2(TE)-1:0] col_i;
 
     int unsigned active_len;
     int unsigned vstart_i;
 
-    tile_state_d = tile_state_q;
-    tile_zero_d  = tile_zero_q;
+    acc_wdata = '0;
+    acc_wen   = '0;
+    acc_waddr = '0;
+    acc_ext_ld = 1'b0;
+    acc_flush = 1'b0;
+    tile_rdata_o = '0;
 
-    ptile      = '0;
-    word       = '0;
-    arch_tile  = '0;
     idx        = '0;
     row_i      = '0;
     col_i      = '0;
     active_len = 0;
     vstart_i   = 0;
 
-    if (path_valid[GRP_SIMPLE] && simple_commit_ready && req.op == VTDISCARD) begin
-      tile_state_d = '0;
-      tile_zero_d  = '1;
+    if (simple_req_valid && simple_req_ready && (spatz_req_simple.op == VTDISCARD)) begin
+      acc_flush = 1'b1;
     end
 
-    if (path_valid[GRP_SIMPLE] && simple_commit_ready && req.op == VTZERO) begin
-      arch_tile = {req.vd[3:2], 2'b00};
+    if (tv_acc_wen) begin
+      idx        = tv_tss_q.index;
+      active_len = (tv_req_q.vl < TE) ? int'(tv_req_q.vl) : TE;
+      vstart_i   = int'(tv_req_q.vstart);
 
-      for (int r = 0; r < TE; r++) begin
-        for (int c = 0; c < TE; c++) begin
-          zvt_pun32_te8(arch_tile, r[2:0], c[2:0], ptile, word);
-          tile_state_d[ptile][word] = '0;
-          tile_zero_d[ptile][word]  = 1'b1;
+      acc_ext_ld = 1'b1;
+      acc_waddr = AccAddrW'(int'(tv_tss_q.tile_id) * SpatialBeats);
+      for (int row = 0; row < CE; row++) begin
+        for (int col = 0; col < CE; col++) begin
+          for (int beat = 0; beat < SpatialBeats; beat++) begin
+            acc_wdata[row][col][beat] = acc_zero_q[tv_tss_q.tile_id][beat] ? '0 :
+                acc_mem_rdata[row][col][int'(tv_tss_q.tile_id) * SpatialBeats + beat];
+          end
+          if (|acc_zero_q[tv_tss_q.tile_id])
+            acc_wen[row][col] = 1'b1;
+        end
+      end
+
+      for (int i = 0; i < TE; i++) begin
+        if ((i >= vstart_i) && (i < active_len)) begin
+          if (tv_tss_q.is_row) begin
+            row_i = idx;
+            col_i = i[$clog2(TE)-1:0];
+          end else begin
+            row_i = i[$clog2(TE)-1:0];
+            col_i = idx;
+          end
+
+          acc_wen[int'(row_i) % CE][int'(col_i) % CE] = 1'b1;
+          acc_wdata[int'(row_i) % CE][int'(col_i) % CE]
+                   [(int'(row_i) / CE) * GroupsPerEdge + (int'(col_i) / CE)] =
+              tv_vrf_data[i*TEW +: TEW];
         end
       end
     end
 
     if (tile_wvalid_i && tile_wready_o) begin
-      arch_tile = {tile_widx_i[1:0], 2'b00};
-
-      for (int i = 0; i < TE; i++) begin
-        zvt_pun32_te8(arch_tile, tile_wrow_i[2:0], i[2:0], ptile, word);
-        tile_state_d[ptile][word] = tile_wdata_i[i*TEW +: TEW];
-        tile_zero_d[ptile][word]  = 1'b0;
-      end
-    end
-
-    if (tv_acc_wen) begin
-      arch_tile  = {tv_req_q.rs1[30:29], 2'b00};
-      idx        = tv_req_q.rs1[2:0];
-      active_len = (tv_req_q.vl < TE) ? int'(tv_req_q.vl) : TE;
-      vstart_i   = int'(tv_req_q.vstart);
-
-      for (int i = 0; i < TE; i++) begin
-        if ((i >= vstart_i) && (i < active_len)) begin
-          if (tv_req_q.rs1[26:24] == 3'd0) begin
-            row_i = idx;
-            col_i = i[2:0];
-          end else begin
-            row_i = i[2:0];
-            col_i = idx;
+      acc_ext_ld = 1'b1;
+      acc_waddr = AccAddrW'(
+          int'(tile_id_t'(tile_w_req_i.idx / NumAccPerTile)) * SpatialBeats);
+      for (int row = 0; row < CE; row++) begin
+        for (int col = 0; col < CE; col++) begin
+          for (int beat = 0; beat < SpatialBeats; beat++) begin
+            acc_wdata[row][col][beat] =
+                acc_zero_q[tile_id_t'(tile_w_req_i.idx / NumAccPerTile)][beat] ? '0 :
+                acc_mem_rdata[row][col]
+                    [int'(tile_id_t'(tile_w_req_i.idx / NumAccPerTile)) * SpatialBeats + beat];
           end
+          if (|acc_zero_q[tile_id_t'(tile_w_req_i.idx / NumAccPerTile)])
+            acc_wen[row][col] = 1'b1;
+        end
+      end
+      for (int i = 0; i < TE; i++) begin
+        col_i = i[$clog2(TE)-1:0];
+        acc_wen[int'(tile_w_req_i.row) % CE][int'(col_i) % CE] = 1'b1;
+        acc_wdata[int'(tile_w_req_i.row) % CE][int'(col_i) % CE]
+                 [(int'(tile_w_req_i.row) / CE) * GroupsPerEdge + (int'(col_i) / CE)] =
+            tile_w_req_i.data[i*TEW +: TEW];
+      end
+    end
 
-          zvt_pun32_te8(arch_tile, row_i, col_i, ptile, word);
-
-          tile_state_d[ptile][word] = tv_vrf_data[i*TEW +: TEW];
-          tile_zero_d[ptile][word]  = 1'b0;
+    if (mac_result_fire && mac_result_write_acc) begin
+      acc_waddr = AccAddrW'(int'(mac_tag_q[NumPipeRegs-1].tile) * SpatialBeats +
+                            int'(mac_tag_q[NumPipeRegs-1].beat));
+      for (int row = 0; row < CE; row++) begin
+        for (int col = 0; col < CE; col++) begin
+          acc_wen[row][col] = 1'b1;
+          acc_wdata[row][col][0] = fma_result[row][col];
         end
       end
     end
 
-    if (fma_result_valid) begin
-      arch_tile = {mac_retire_tile, 2'b00};
-
-      for (int r = 0; r < TE; r++) begin
-        for (int c = 0; c < TE; c++) begin
-          zvt_pun32_te8(arch_tile, r[2:0], c[2:0], ptile, word);
-          tile_state_d[ptile][word] = fma_result[r][c];
-          tile_zero_d[ptile][word]  = 1'b0;
-        end
+    if (tile_rvalid_i) begin
+      for (int i = 0; i < TE; i++) begin
+        col_i = i[$clog2(TE)-1:0];
+        tile_rdata_o[i*TEW +: TEW] =
+            acc_rdata[tile_id_t'(tile_r_req_i.idx / NumAccPerTile)][tile_r_req_i.row][col_i];
       end
     end
   end
+
+  always_comb begin : acc_zero_update
+    acc_zero_d = acc_zero_q;
+
+    if (simple_req_valid && simple_req_ready && (spatz_req_simple.op == VTDISCARD))
+      acc_zero_d = '0;
+    else begin
+      if (simple_req_valid && simple_req_ready && (spatz_req_simple.op == VTZERO))
+        acc_zero_d[spatz_req_simple.op_ope.tss.tile_id] = '1;
+      if (mac_result_fire && mac_result_write_acc)
+        acc_zero_d[mac_tag_q[NumPipeRegs-1].tile][mac_tag_q[NumPipeRegs-1].beat] = 1'b0;
+      if (tv_acc_wen)
+        acc_zero_d[tv_tss_q.tile_id] = '0;
+      if (tile_wvalid_i && tile_wready_o)
+        acc_zero_d[tile_id_t'(tile_w_req_i.idx / NumAccPerTile)] = '0;
+    end
+  end : acc_zero_update
+
+  typedef enum logic [1:0] {
+    RSP_MAC,
+    RSP_VT,
+    RSP_TV,
+    RSP_SIMPLE
+  } ope_rsp_sel_e;
 
   vfu_rsp_t [3:0] arb_inp_data ;
   logic     [3:0] arb_inp_valid;
   logic     [3:0] arb_inp_ready;
 
-  assign arb_inp_data [GRP_MAC]    = mac_done_rsp   ;
-  assign arb_inp_data [GRP_VT]     = vt_done_rsp    ;
-  assign arb_inp_data [GRP_TV]     = tv_done_rsp    ;
-  assign arb_inp_data [GRP_SIMPLE] = simple_done_rsp;
+  assign arb_inp_data[RSP_MAC]    = mac_done_rsp;
+  assign arb_inp_data[RSP_VT]     = vt_done_rsp;
+  assign arb_inp_data[RSP_TV]     = tv_done_rsp;
+  assign arb_inp_data[RSP_SIMPLE] = simple_done_rsp;
 
-  assign arb_inp_valid[GRP_MAC]    = mac_done_valid   ;
-  assign arb_inp_valid[GRP_VT]     = vt_done_valid    ;
-  assign arb_inp_valid[GRP_TV]     = tv_done_valid    ;
-  assign arb_inp_valid[GRP_SIMPLE] = simple_done_valid;
+  assign arb_inp_valid[RSP_MAC]    = mac_done_valid;
+  assign arb_inp_valid[RSP_VT]     = vt_done_valid;
+  assign arb_inp_valid[RSP_TV]     = tv_done_valid;
+  assign arb_inp_valid[RSP_SIMPLE] = simple_done_valid;
 
-  assign mac_done_ready    = arb_inp_ready[GRP_MAC]   ;
-  assign vt_done_ready     = arb_inp_ready[GRP_VT]    ;
-  assign tv_done_ready     = arb_inp_ready[GRP_TV]    ;
-  assign simple_done_ready = arb_inp_ready[GRP_SIMPLE];
+  assign mac_done_ready    = arb_inp_ready[RSP_MAC];
+  assign vt_done_ready     = arb_inp_ready[RSP_VT];
+  assign tv_done_ready     = arb_inp_ready[RSP_TV];
+  assign simple_done_ready = arb_inp_ready[RSP_SIMPLE];
 
   stream_arbiter #(
     .DATA_T  (vfu_rsp_t),
@@ -496,8 +946,8 @@ module spatz_ope
 
   // Port [0] owner: MAC while a candidate is live (pending or fresh), else TV.
   always_comb begin : sb_ids
-    vrf_id_o[0] = mac_eff_valid ? mac_eff.id : tv_req_q.id;
-    vrf_id_o[1] = mac_eff.id;
+    vrf_id_o[0] = mac_exec_valid ? mac_exec_ctx.id : tv_req_q.id;
+    vrf_id_o[1] = mac_exec_ctx.id;
     vrf_id_o[2] = vt_req_q.id;
   end
 
@@ -505,24 +955,39 @@ module spatz_ope
     vrf_re_o    = '0;
     vrf_raddr_o = '0;
 
-    if (mac_eff_valid) begin
-      vrf_re_o[0]    = mac_eff.use_vs2;
-      vrf_re_o[1]    = mac_eff.use_vs1;
-      vrf_raddr_o[0] = vrf_addr_t'(mac_eff.vs2) << $clog2(NrWordsPerVector);
-      vrf_raddr_o[1] = vrf_addr_t'(mac_eff.vs1) << $clog2(NrWordsPerVector);
-    end else if (tv_busy_q && tv_tss_valid_q && !tv_data_latched_q) begin
+    if (mac_exec_valid) begin
+      int unsigned operand_bits;
+      int unsigned reduction_stride;
+
+      operand_bits = 8 << int'(mac_exec_ctx.ew);
+      unique case (mac_exec_ctx.ew)
+        EW_8:    reduction_stride = 2;
+        EW_16:   reduction_stride = 4;
+        EW_32:   reduction_stride = 1;
+        default: reduction_stride = 8;
+      endcase
+      vrf_re_o[0] = mac_exec_ctx.use_vs2;
+      vrf_re_o[1] = mac_exec_ctx.use_vs1;
+      vrf_raddr_o[0] =
+          (vrf_addr_t'(int'(mac_exec_ctx.vs2) +
+                       int'(mac_exec_ctx.reduction) * reduction_stride) <<
+           $clog2(NrWordsPerVector)) +
+          vrf_addr_t'((int'(mac_group_row) * CE * operand_bits) / VRFWordWidth);
+      vrf_raddr_o[1] =
+          (vrf_addr_t'(int'(mac_exec_ctx.vs1) +
+                       int'(mac_exec_ctx.reduction) * reduction_stride) <<
+           $clog2(NrWordsPerVector)) +
+          vrf_addr_t'((int'(mac_group_col) * CE * operand_bits) / VRFWordWidth);
+    end else if (tv_busy_q && tv_tss_q.tile_valid && !tv_data_latched_q) begin
       vrf_re_o[0]    = tv_req_q.use_vs2;
       vrf_raddr_o[0] = vrf_addr_t'(tv_req_q.vs2) << $clog2(NrWordsPerVector);
     end
   end
 
   always_comb begin : vrf_wr_proc
-    zvt_ptile_t ptile;
-    zvt_word_t  word;
-    logic [3:0] arch_tile;
-    logic [2:0] idx;
-    logic [2:0] row_i;
-    logic [2:0] col_i;
+    logic [$clog2(TE)-1:0] idx;
+    logic [$clog2(TE)-1:0] row_i;
+    logic [$clog2(TE)-1:0] col_i;
     int unsigned active_len;
     int unsigned vstart_i;
 
@@ -531,124 +996,137 @@ module spatz_ope
     vrf_wbe_o   = '0;
     vrf_wdata_o = '0;
 
-    arch_tile = '0;
-    idx       = '0;
-    row_i     = '0;
-    col_i     = '0;
-    ptile     = '0;
-    word      = '0;
+    idx   = '0;
+    row_i = '0;
+    col_i = '0;
 
     active_len = (vt_req_q.vl < TE) ? int'(vt_req_q.vl) : TE;
     vstart_i   = int'(vt_req_q.vstart);
 
-    if (vt_busy_q && vt_tss_valid_q) begin
+    if (vt_busy_q && vt_tss_q.tile_valid) begin
       vrf_waddr_o = vrf_addr_t'(vt_req_q.vd) << $clog2(NrWordsPerVector);
       vrf_we_o    = vt_req_q.use_vd;
 
-      arch_tile = {vt_req_q.rs1[30:29], 2'b00};
-      idx       = vt_req_q.rs1[2:0];
+      idx = vt_tss_q.index;
 
       for (int i = 0; i < TE; i++) begin
         if ((i >= vstart_i) && (i < active_len)) begin
-          if (vt_req_q.rs1[26:24] == 3'd0) begin
+          if (vt_tss_q.is_row) begin
             row_i = idx;
-            col_i = i[2:0];
+            col_i = i[$clog2(TE)-1:0];
           end else begin
-            row_i = i[2:0];
+            row_i = i[$clog2(TE)-1:0];
             col_i = idx;
           end
 
-          zvt_pun32_te8(arch_tile, row_i, col_i, ptile, word);
-
-          vrf_wdata_o[i*TEW +: TEW] = tile_zero_q[ptile][word] ? '0 : tile_state_q[ptile][word];
+          vrf_wdata_o[i*TEW +: TEW] = acc_rdata[vt_tss_q.tile_id][row_i][col_i];
           vrf_wbe_o[i*ELENB +: ELENB] = {ELENB{1'b1}};
         end
       end
     end
   end
 
-  assign tile_wready_o = mac_pipe_idle && !vt_busy_q && !tv_busy_q && !req_valid;
-  assign tile_rready_o = mac_pipe_idle && !vt_busy_q && !tv_busy_q && !req_valid;
-
-  always_comb begin : tile_rdata_proc
-    zvt_ptile_t ptile;
-    zvt_word_t  word;
-    logic [3:0] arch_tile;
-
-    tile_rdata_o = '0;
-
-    ptile     = '0;
-    word      = '0;
-    arch_tile = {tile_ridx_i[1:0], 2'b00};
-
-    for (int i = 0; i < TE; i++) begin
-      zvt_pun32_te8(arch_tile, tile_rrow_i[2:0], i[2:0], ptile, word);
-      tile_rdata_o[i*TEW +: TEW] = tile_zero_q[ptile][word] ? '0 : tile_state_q[ptile][word];
-    end
-  end
-
-  // ctrl.tile_en gates fma_clk: must be 1 whenever the pipe needs to
-  // advance (a new fire this cycle) or hold entries that still need to
-  // shift/drain (mac_inflight_cnt_q != 0), including stall cycles caused
-  // by commit backpressure.
-  always_comb begin : engine_ctrl
-    ctrl          = '0;
-    ctrl.tile_en  = mac_fire || (mac_inflight_cnt_q != 0);
-    ctrl.mac_fire = mac_fire;
-  end : engine_ctrl
-
   logic fma_clk;
 
   tc_clk_gating i_fma_clk_gate (
     .clk_i     (clk_i       ),
-    .en_i      (ctrl.tile_en),
+    .en_i      (mac_fire || (mac_inflight_cnt_q != 0)),
     .test_en_i ('0          ),
     .clk_o     (fma_clk     )
   );
 
-  // VRF reads are combinational/0-latency and re-driven every cycle
-  // mac_eff_valid is live (vrf_re_proc), so vrf_rdata_i is already the
-  // fresh operand for whichever request is firing this cycle -- no latch
-  // needed between VRF and the FMA inputs.
-  logic [TE-1:0][TEW-1:0] x_op_fma, w_op_fma;
-  assign x_op_fma = vrf_rdata_i[0][TE*TEW-1:0];
-  assign w_op_fma = vrf_rdata_i[1][TE*TEW-1:0];
+  logic [CE-1:0][TEW-1:0] fma_x_operand, fma_w_operand;
+  fpnew_pkg::fp_format_e mac_input_format;
+
+  always_comb begin : proc_mac_input_format
+    mac_input_format = fpnew_pkg::FP32;
+    unique case (mac_exec_ctx.ew)
+      EW_16: mac_input_format = mac_exec_ctx.is_alt ? fpnew_pkg::FP16ALT : fpnew_pkg::FP16;
+      EW_8:  mac_input_format = mac_exec_ctx.is_alt ? fpnew_pkg::FP8ALT  : fpnew_pkg::FP8;
+      default: mac_input_format = fpnew_pkg::FP32;
+    endcase
+  end
+
+
+  always_comb begin : fma_operand_select
+    int unsigned operand_bits;
+    int unsigned x_bit_offset;
+    int unsigned w_bit_offset;
+
+    fma_x_operand = '0;
+    fma_w_operand = '0;
+
+    operand_bits = 8 << int'(mac_exec_ctx.ew);
+    x_bit_offset = (int'(mac_group_row) * CE * operand_bits) % VRFWordWidth;
+    w_bit_offset = (int'(mac_group_col) * CE * operand_bits) % VRFWordWidth;
+    unique case (mac_exec_ctx.ew)
+      EW_16: begin
+        for (int unsigned el = 0; el < CE; el++) begin
+          fma_x_operand[el][15:0] = vrf_rdata_i[0][x_bit_offset + el*16 +: 16];
+          fma_w_operand[el][15:0] = vrf_rdata_i[1][w_bit_offset + el*16 +: 16];
+        end
+      end
+      EW_8: begin
+        for (int unsigned el = 0; el < CE; el++) begin
+          fma_x_operand[el][7:0] = vrf_rdata_i[0][x_bit_offset + el*8 +: 8];
+          fma_w_operand[el][7:0] = vrf_rdata_i[1][w_bit_offset + el*8 +: 8];
+        end
+      end
+      default: begin
+        for (int unsigned el = 0; el < CE; el++) begin
+          fma_x_operand[el] = vrf_rdata_i[0][x_bit_offset + el*TEW +: TEW];
+          fma_w_operand[el] = vrf_rdata_i[1][w_bit_offset + el*TEW +: TEW];
+        end
+      end
+    endcase
+  end : fma_operand_select
 
   always_comb begin : fma_addend_proc
-    zvt_ptile_t ptile;
-    zvt_word_t  word;
-    logic [3:0] arch_tile;
-
     fma_addend = '0;
-    ptile      = '0;
-    word       = '0;
-    arch_tile  = {mac_eff.vd[3:2], 2'b00};
 
-    for (int r = 0; r < TE; r++) begin
-      for (int c = 0; c < TE; c++) begin
-        zvt_pun32_te8(arch_tile, r[2:0], c[2:0], ptile, word);
-        // Chain to the FMA's own result for the tile retiring this cycle
-        // instead of tile_state_q, which hasn't been written yet -- this
-        // is what lets a K-loop's next vtfmm to the same tile fire the
-        // exact cycle the previous one's result emerges.
-        if (mac_eff_valid && fma_result_valid && (mac_retire_tile == mac_eff.vd[3:2])) begin
-          fma_addend[r][c] = fma_result[r][c];
+    for (int row = 0; row < CE; row++) begin
+      for (int col = 0; col < CE; col++) begin
+        if (mac_result_forward) begin
+          fma_addend[row][col] = fma_result[row][col];
+        end else if (acc_zero_q[mac_exec_ctx.tile][mac_beat_idx]) begin
+          fma_addend[row][col] = '0;
         end else begin
-          fma_addend[r][c] = tile_zero_q[ptile][word] ? '0 : tile_state_q[ptile][word];
+          fma_addend[row][col] =
+              acc_mem_rdata[row][col]
+                           [int'(mac_exec_ctx.tile) * SpatialBeats + int'(mac_beat_idx)];
         end
       end
     end
   end
 
-  // fma_result_valid is driven representatively from [0][0]: all TE*TE FMAs
-  // fire together with identical latency, so any single instance's
-  // result_valid_o reflects them all.
-  for (genvar row = 0; row < TE; row++) begin : gen_row
-    for (genvar col = 0; col < TE; col++) begin : gen_col
+  for (genvar row = 0; row < CE; row++) begin : gen_acc_row
+    for (genvar col = 0; col < CE; col++) begin : gen_acc_col
+      opope_accumulator #(
+        .DATA_WIDTH(TEW         ),
+        .DEPTH     (AccDepth    ),
+        .RD_PORTS  (AccDepth    ),
+        .WR_PORTS  (SpatialBeats)
+      ) i_accumulator (
+        .clk_i             (clk_i              ),
+        .rst_ni            (rst_ni             ),
+        .flush_i           (acc_flush          ),
+        .iteration_change_i(1'b0               ),
+        .wdata_i           (acc_wdata[row][col]),
+        .wen_i             (acc_wen[row][col]  ),
+        .waddr_i           (acc_waddr          ),
+        .raddr_i           ('0                 ),
+        .ext_ld_i          (acc_ext_ld         ),
+        .rdata_o           (acc_mem_rdata[row][col])
+      );
+    end : gen_acc_col
+  end : gen_acc_row
 
-      logic this_fma_valid;
+  for (genvar row = 0; row < CE; row++) begin : gen_fma_row
+    for (genvar col = 0; col < CE; col++) begin : gen_fma_col
 
-      assign fma_result_valid_a[row][col] = this_fma_valid;
+      logic fma_valid;
+
+      assign fma_result_valid[row][col] = fma_valid;
 
       opope_fma #(
         .FpFormat    (fpnew_pkg::FP32       ),
@@ -658,57 +1136,84 @@ module spatz_ope
       ) i_fma (
         .clk_i          (fma_clk                                                               ),
         .rst_ni         (rst_ni                                                                ),
-        .operands_i     ({fma_addend[row][col],
-                          w_op_fma[col],
-                          x_op_fma[row]}                                                       ),
-        .valid_i        (ctrl.mac_fire                                                         ),
-        .ready_o        (fma_ready_a[row][col]                                                 ),
-        .reg_enable_i   (ctrl.tile_en                                                          ),
-        .result_valid_o (this_fma_valid                                                        ),
-        .result_ready_i (mac_commit_ready                                                      ),
+        .operands_i     ({fma_w_operand[col],
+                          fma_x_operand[row]}                                                  ),
+        .addend_i       (fma_addend[row][col]                                                   ),
+        .input_format_i (mac_input_format                                                       ),
+        .valid_i        (mac_fire                                                              ),
+        .ready_o        (fma_ready[row][col]                                                   ),
+        .reg_enable_i   (mac_fire || (mac_inflight_cnt_q != 0)                                ),
+        .result_valid_o (fma_valid                                                             ),
+        .result_ready_i (fma_result_ready                                                      ),
         .result_o       (fma_result[row][col]                                                  )
       );
 
-    end : gen_col
-  end : gen_row
+    end : gen_fma_col
+  end : gen_fma_row
+
+  initial begin : parameter_check
+    if ((CE == 0) || (CE > TE))
+      $error("[spatz_ope] CE must be in the range 1..TE");
+    if ((TE % CE) != 0)
+      $error("[spatz_ope] CE must divide TE exactly");
+    if ((AccDepth & (AccDepth - 1)) != 0)
+      $error("[spatz_ope] folded accumulator depth must be a power of two");
+    if (!(((TE == 16) && ((CE == 2) || (CE == 4) || (CE == 8))) ||
+          ((TE == 8) && (CE == 4)) || ((TE == 32) && (CE == 8)) ||
+          ((TE == 64) && (CE == 8))) || (TEW != 32))
+      $error("[spatz_ope] unsupported no-context TE/CE/TEW configuration");
+    if ((TE != 16) || (CE != 8) || (TEW != 32) || (SpatialBeats != NumPipeRegs))
+      $error("[spatz_ope] resident mode requires TE=16, CE=8, TEW=32");
+  end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin : seq_block
     if (!rst_ni) begin
-      mac_pend_q         <= '0;
-      mac_pend_busy_q     <= 1'b0;
+      mac_ctx_q           <= '0;
+      mac_ctx_valid_q     <= '0;
+      mac_ctx_beat_q      <= '0;
+      mac_seq_head_q      <= '0;
+      mac_seq_tail_q      <= '0;
       tile_inflight_q     <= '0;
       mac_inflight_cnt_q  <= '0;
       mac_tag_q           <= '0;
       vt_busy_q         <= 1'b0;
       vt_req_q          <= '0;
-      vt_tss_valid_q    <= 1'b0;
+      vt_tss_q          <= '0;
       tv_busy_q         <= 1'b0;
       tv_req_q          <= '0;
-      tv_tss_valid_q    <= 1'b0;
+      tv_tss_q          <= '0;
       tv_data_q         <= '0;
       tv_data_latched_q <= 1'b0;
-      tile_state_q      <= '0;
-      tile_zero_q       <= '0;
+      acc_zero_q        <= '0;
+      resident_valid_q       <= 1'b0;
+      resident_tile_q        <= '0;
+      resident_drain_valid_q <= 1'b0;
+      resident_drain_reason_q <= DrainNone;
     end else begin
-      tile_state_q       <= tile_state_d;
-      tile_zero_q        <= tile_zero_d;
       tile_inflight_q     <= tile_inflight_d;
       mac_inflight_cnt_q  <= mac_inflight_cnt_d;
       mac_tag_q            <= mac_tag_d;
-      mac_pend_busy_q      <= mac_pend_busy_d;
+      mac_ctx_q           <= mac_ctx_d;
+      mac_ctx_valid_q     <= mac_ctx_valid_d;
+      mac_ctx_beat_q      <= mac_ctx_beat_d;
+      acc_zero_q          <= acc_zero_d;
+      resident_valid_q       <= resident_valid_d;
+      resident_tile_q        <= resident_tile_d;
+      resident_drain_valid_q <= resident_drain_valid_d;
+      resident_drain_reason_q <= resident_drain_reason_d;
 
-      if (!mac_pend_busy_q && path_valid[GRP_MAC] && !mac_fire)
-        mac_pend_q <= req;
+      mac_seq_head_q <= mac_seq_head_d;
+      mac_seq_tail_q <= mac_seq_tail_d;
 
-      if (path_valid[GRP_VT] && path_ready[GRP_VT]) begin
-        vt_req_q       <= req;
-        vt_tss_valid_q <= tss_valid;
+      if (vt_req_valid && vt_req_ready) begin
+        vt_req_q        <= spatz_req_vt;
+        vt_tss_q        <= spatz_req_vt.op_ope.tss;
       end
       vt_busy_q <= vt_busy_d;
 
-      if (path_valid[GRP_TV] && path_ready[GRP_TV]) begin
-        tv_req_q       <= req;
-        tv_tss_valid_q <= tss_valid;
+      if (tv_req_valid && tv_req_ready) begin
+        tv_req_q        <= spatz_req_tv;
+        tv_tss_q        <= spatz_req_tv.op_ope.tss;
       end
       tv_busy_q <= tv_busy_d;
 
@@ -723,5 +1228,6 @@ module spatz_ope
       end
     end
   end : seq_block
+
 
 endmodule : spatz_ope
