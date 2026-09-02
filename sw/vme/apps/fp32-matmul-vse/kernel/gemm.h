@@ -38,7 +38,8 @@ static inline void wait_spatz(void)
     asm volatile("csrr %0, fcsr" : "=r"(fcsr) :: "memory");
 }
 
-// FP32 VME GEMM over TE=16 with architectural tk=1 and RES_K=8 software
-// residency. [ti_lo, ti_hi) selects an even-aligned range of 16-row tiles.
+// FP32 VME GEMM using LMUL=8 source groups and architectural tk=1. Each
+// VTFMM names only the aligned base of its vs1/vs2 register group.
+// [ti_lo, ti_hi) selects an even-aligned range of 16-row tiles.
 void gemm_fp32(float *C, const float *Apack, const float *Bpack,
                uint32_t ti_lo, uint32_t ti_hi);

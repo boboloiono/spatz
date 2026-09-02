@@ -56,7 +56,7 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
     uintptr_t p10 = (uintptr_t)(C + (ti + 1) * col_tiles * 16 * 16);
     uintptr_t p11 = p10 + 16 * 16 * sizeof(float);
     const uintptr_t tile_dim = 16;
-    const uintptr_t TK = 8;
+    uintptr_t TK = 8;
     uintptr_t block_counter = (uintptr_t)num_blocks;
     uintptr_t loop_counter;
 
@@ -68,69 +68,35 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         // vle B0
         "msetmtypei 1, 2\n"
         "msettn x0, %[tile_dim]\n"
-        "vsetvli %[loop], x0, e32, m8, ta, ma\n"
-        "vle32.v v0,  (%[a0p])\n"
-        "vle32.v v16,  (%[b0p])\n"
         "msettm x0, %[tile_dim]\n"
         "msettk x0, %[tk]\n"
         "vtzero mt0\n"
+        "vtzero mt4\n"
+        "vtzero mt8\n"
+        "vtzero mt12\n"
+        "vsetvli %[loop], x0, e32, m8, ta, ma\n"
+        "vle32.v v0,  (%[a0p])\n"  "addi %[a0p], %[a0p], 512\n"
+        "vle32.v v16,  (%[b0p])\n" "addi %[b0p], %[b0p], 512\n"
 
         // vle B1
         // vtfmm mt0, A0, B0
-        "vle32.v v24,  (%[b1p])\n"
         "vtfmm.tvv mt0, v0, v16\n"
-        "addi %[a0p], %[a0p], 512\n"
-        "vtfmm.tvv mt0, v1, v17\n"
-        "addi %[b0p], %[b0p], 512\n"
-        "vtfmm.tvv mt0, v2, v18\n"
-        "addi %[b1p], %[b1p], 512\n"
-        "vtfmm.tvv mt0, v3, v19\n"
-        "vtfmm.tvv mt0, v4, v20\n"
-        "vtfmm.tvv mt0, v5, v21\n"
-        "vtzero mt4\n"
-        "vtfmm.tvv mt0, v6, v22\n"
-        "vtfmm.tvv mt0, v7, v23\n"
+        "vle32.v v24,  (%[b1p])\n" "addi %[b1p], %[b1p], 512\n"
 
         // vle A1
         // vtfmm mt4, A0, B1
-        "vle32.v v8,  (%[a1p])\n"
         "vtfmm.tvv mt4, v0, v24\n"
-        "addi %[a1p], %[a1p], 512\n"
-        "vtfmm.tvv mt4, v1, v25\n"
-        "vtfmm.tvv mt4, v2, v26\n"
-        "vtfmm.tvv mt4, v3, v27\n"
-        "vtfmm.tvv mt4, v4, v28\n"
-        "vtfmm.tvv mt4, v5, v29\n"
-        "vtzero mt8\n"
-        "vtfmm.tvv mt4, v6, v30\n"
-        "vtfmm.tvv mt4, v7, v31\n"
+        "vle32.v v8,  (%[a1p])\n"  "addi %[a1p], %[a1p], 512\n"
 
         // preload vle A0
         // vtfmm mt8, A1, B0
-        "vle32.v v0,  (%[a0p])\n"
         "vtfmm.tvv mt8, v8,  v16\n"
-        "addi %[a0p], %[a0p], 512\n"
-        "vtfmm.tvv mt8, v9,  v17\n"
-        "vtfmm.tvv mt8, v10,  v18\n"
-        "vtfmm.tvv mt8, v11,  v19\n"
-        "vtfmm.tvv mt8, v12,  v20\n"
-        "vtfmm.tvv mt8, v13,  v21\n"
-        "vtzero mt12\n"
-        "vtfmm.tvv mt8, v14,  v22\n"
-        "vtfmm.tvv mt8, v15,  v23\n"
+        "vle32.v v0,  (%[a0p])\n"  "addi %[a0p], %[a0p], 512\n"
 
         // preload vle B0
         // vtfmm mt12, A1, B1
-        "vle32.v v16,  (%[b0p])\n"
         "vtfmm.tvv mt12, v8,  v24\n"
-        "addi %[b0p], %[b0p], 512\n"
-        "vtfmm.tvv mt12, v9,  v25\n"
-        "vtfmm.tvv mt12, v10, v26\n"
-        "vtfmm.tvv mt12, v11, v27\n"
-        "vtfmm.tvv mt12, v12, v28\n"
-        "vtfmm.tvv mt12, v13, v29\n"
-        "vtfmm.tvv mt12, v14, v30\n"
-        "vtfmm.tvv mt12, v15, v31\n"
+        "vle32.v v16,  (%[b0p])\n"  "addi %[b0p], %[b0p], 512\n"
 
         // K-Group 1 to N-3
         // vle B1
@@ -138,56 +104,24 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         "9:\n"
         "li %[loop], 5\n"
         "1:\n"
+        "vle32.v v24,  (%[b1p])\n"  "addi %[b1p], %[b1p], 512\n"
         "vtfmm.tvv mt0, v0, v16\n"
-        "vtfmm.tvv mt0, v1, v17\n"
-        "vle32.v v24,  (%[b1p])\n"
-        "vtfmm.tvv mt0, v2, v18\n"
-        "addi %[b1p], %[b1p], 512\n"
-        "vtfmm.tvv mt0, v3, v19\n"
-        "vtfmm.tvv mt0, v4, v20\n"
-        "vtfmm.tvv mt0, v5, v21\n"
-        "vtfmm.tvv mt0, v6, v22\n"
-        "vtfmm.tvv mt0, v7, v23\n"
 
         // vle A1
         // vtfmm mt4, A0, B1
-        "vle32.v v8,  (%[a1p])\n"
+        "vle32.v v8,  (%[a1p])\n"  "addi %[a1p], %[a1p], 512\n"
         "vtfmm.tvv mt4, v0, v24\n"
-        "addi %[a1p], %[a1p], 512\n"
-        "vtfmm.tvv mt4, v1, v25\n"
-        "vtfmm.tvv mt4, v2, v26\n"
-        "vtfmm.tvv mt4, v3, v27\n"
-        "vtfmm.tvv mt4, v4, v28\n"
-        "vtfmm.tvv mt4, v5, v29\n"
-        "vtfmm.tvv mt4, v6, v30\n"
-        "vtfmm.tvv mt4, v7, v31\n"
 
         // preload vle A0
         // vtfmm mt8, A1, B0
-        "vle32.v v0,  (%[a0p])\n"
+        "vle32.v v0,  (%[a0p])\n"  "addi %[a0p], %[a0p], 512\n"
         "vtfmm.tvv mt8, v8,  v16\n"
-        "addi %[a0p], %[a0p], 512\n"
-        "vtfmm.tvv mt8, v9,  v17\n"
-        "vtfmm.tvv mt8, v10,  v18\n"
-        "vtfmm.tvv mt8, v11,  v19\n"
-        "vtfmm.tvv mt8, v12,  v20\n"
-        "vtfmm.tvv mt8, v13,  v21\n"
-        "vtfmm.tvv mt8, v14,  v22\n"
-        "vtfmm.tvv mt8, v15,  v23\n"
 
         // preload vle B0
         // vtfmm mt12, A1, B1
         "addi %[loop], %[loop], -1\n"
-        "vle32.v v16,  (%[b0p])\n"
+        "vle32.v v16,  (%[b0p])\n"  "addi %[b0p], %[b0p], 512\n"
         "vtfmm.tvv mt12, v8,  v24\n"
-        "addi %[b0p], %[b0p], 512\n"
-        "vtfmm.tvv mt12, v9,  v25\n"
-        "vtfmm.tvv mt12, v10, v26\n"
-        "vtfmm.tvv mt12, v11, v27\n"
-        "vtfmm.tvv mt12, v12, v28\n"
-        "vtfmm.tvv mt12, v13, v29\n"
-        "vtfmm.tvv mt12, v14, v30\n"
-        "vtfmm.tvv mt12, v15, v31\n"
         "bnez %[loop], 1b\n"
         // "3:\n"
 
@@ -196,196 +130,62 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         // vle A0'
         // vtfmm mt0, A0, B0
         "vtfmm.tvv mt0, v0, v16\n"
-        "vtfmm.tvv mt0, v1, v17\n"
-        "vtfmm.tvv mt0, v2, v18\n"
         "vle32.v v24,  (%[b0p])\n"
-        "vtfmm.tvv mt0, v3, v19\n"
-        "vtfmm.tvv mt0, v4, v20\n"
         "vle32.v v8,  (%[a0p])\n"
-        "vtfmm.tvv mt0, v5, v21\n"
-        "vtfmm.tvv mt0, v6, v22\n"
-        "vtfmm.tvv mt0, v7, v23\n"
         "addi %[a0p], %[a0p], 512\n"
         "addi %[b0p], %[b0p], 512\n"
 
         // vle B1
         // vtfmm mt0, A0', B0'
         "vtfmm.tvv mt0, v8, v24\n"
-        "vtfmm.tvv mt0, v9, v25\n"
-        "vtfmm.tvv mt0, v10, v26\n"
-        "vtfmm.tvv mt0, v11, v27\n"
         "vle32.v v16,  (%[b1p])\n"
-        "vtfmm.tvv mt0, v12, v28\n"
-        "vtfmm.tvv mt0, v13, v29\n"
-        "vtfmm.tvv mt0, v14, v30\n"
-        "vtfmm.tvv mt0, v15, v31\n"
         "addi %[b1p], %[b1p], 512\n"
 
         // vle B1'
         // vtfmm mt4, A0, B1
         "vtfmm.tvv mt4, v0, v16\n"
-        "vtfmm.tvv mt4, v1, v17\n"
-        "vtfmm.tvv mt4, v2, v18\n"
-        "vtfmm.tvv mt4, v3, v19\n"
         "vle32.v v24,  (%[b1p])\n" 
-        "vtfmm.tvv mt4, v4, v20\n"
-        "vtfmm.tvv mt4, v5, v21\n"
-        "vtfmm.tvv mt4, v6, v22\n"
-        "vtfmm.tvv mt4, v7, v23\n"
         "addi %[b1p], %[b1p], 512\n"
 
         // vle A1
         // vtfmm mt4, A0', B1' || vtmv mt0 (row0 - row7) + vse
-        "vtmv.v.t v0, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v1, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
+        "vtmv.v.t v0, %[tss0]\n"  "addi %[tss0], %[tss0], 8\n"
         "vtfmm.tvv mt4, v8, v24\n"
-
-        "vtmv.v.t v2, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v3, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt4, v9, v25\n"
-
-        "vtmv.v.t v4, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v5, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt4, v10, v26\n"
-
-        "vtmv.v.t v6, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v7, %[tss0]\n"  "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt4, v11, v27\n"
-
-        "vse32.v v0, (%[p00])\n" "addi %[p00], %[p00], 512\n"
-        "vtfmm.tvv mt4, v12, v28\n"
-
-        "vtfmm.tvv mt4, v13, v29\n"
-
-        "vtfmm.tvv mt4, v14, v30\n"
-
+        "vse32.v v0, (%[p00])\n"  "addi %[p00], %[p00], 512\n"
         "vle32.v v0,  (%[a1p])\n" "addi %[a1p], %[a1p], 512\n"
-        "vtfmm.tvv mt4, v15, v31\n"
 
         // vle A1'
         // vtfmm mt12, A1, B1 || vtmv mt0 (row8 - row15) + vse
-        "vtmv.v.t v8,  %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v9,  %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
+        "vtmv.v.t v8,  %[tss0]\n" "addi %[tss0], %[tss0], 8\n"
         "vtfmm.tvv mt12, v0,  v16\n"
-
-        "vtmv.v.t v10, %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v11, %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt12, v1,  v17\n"
-        
-        "vtmv.v.t v12, %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v13, %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt12, v2,  v18\n"
-
-        "vtmv.v.t v14, %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
-        "vtmv.v.t v15, %[tss0]\n" "addi %[tss0], %[tss0], 1\n"
-        "vtfmm.tvv mt12, v3,  v19\n"
-
         "vse32.v v8, (%[p00])\n" "addi %[p00], %[p00], 1536\n"
-        "vtfmm.tvv mt12, v4,  v20\n"
-
-        "vtfmm.tvv mt12, v5,  v21\n"
-
-        "vtfmm.tvv mt12, v6,  v22\n"
-
         "vle32.v v8,  (%[a1p])\n" "addi %[a1p], %[a1p], 512\n"
-        "vtfmm.tvv mt12, v7,  v23\n"
 
         // vle reload B0 (restore B0 pointer)
         // vtfmm mt12, A1', B1' || vtmv mt4 (row0 - row7) + vse
-        "vtmv.v.t v16, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v17, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
+        "vtmv.v.t v16, %[tss4]\n" "addi %[tss4], %[tss4], 8\n"
         "vtfmm.tvv mt12, v8,  v24\n"
-        
-        "vtmv.v.t v18, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v19, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v9,  v25\n"
-
-        "vtmv.v.t v20, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v21, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v10,  v26\n"
-
-        "vtmv.v.t v22, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v23, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt12, v11,  v27\n"
-
-        "vse32.v v16, (%[p01])\n" "addi %[p01], %[p01], 512\n"
-        "vtfmm.tvv mt12, v12,  v28\n"
-
-        "vtfmm.tvv mt12, v13,  v29\n"
+        "vse32.v v16, (%[p01])\n"  "addi %[p01], %[p01], 512\n"
         "addi %[b0p], %[b0p], -1024\n"
-
-        "vtfmm.tvv mt12, v14,  v30\n"
-
-        "vle32.v v16,  (%[b0p])\n"  "addi %[b0p], %[b0p], 512\n"
-        "vtfmm.tvv mt12, v15,  v31\n"
+        "vle32.v v16,  (%[b0p])\n" "addi %[b0p], %[b0p], 512\n"
 
         // vle reload B0'
         // vtfmm mt8, A1, B0 || vtmv mt4 (row8 - row15) + vse
-        "vtmv.v.t v24, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v25, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
+        "vtmv.v.t v24, %[tss4]\n" "addi %[tss4], %[tss4], 8\n"
         "vtfmm.tvv mt8, v0,  v16\n"
-        
-        "vtmv.v.t v26, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v27, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt8, v1,  v17\n"
-
-        "vtmv.v.t v28, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v29, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt8, v2,  v18\n"
-
-        "vtmv.v.t v30, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtmv.v.t v31, %[tss4]\n" "addi %[tss4], %[tss4], 1\n"
-        "vtfmm.tvv mt8, v3,  v19\n"
-
         "vse32.v v24, (%[p01])\n"  "addi %[p01], %[p01], 1536\n"
-        "vtfmm.tvv mt8, v4,  v20\n"
-
-        "vtfmm.tvv mt8, v5,  v21\n"
-
-        "vtfmm.tvv mt8, v6,  v22\n"
-
         "vle32.v v24,  (%[b0p])\n" "addi %[b0p], %[b0p], 512\n"
-        "vtfmm.tvv mt8, v7,  v23\n"
 
         // vtfmm mt8, A1', B0' || vtmv mt12 (row0 - row7) + vse
         // vtmv mt12 (row8 - row15) + vse
         "addi %[loop], %[tss12], 8\n"
 
-        "vtmv.v.t v0, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
-        "vtmv.v.t v1, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
+        "vtmv.v.t v0, %[tss12]\n" "addi %[tss12], %[tss12], 8\n"
         "vtfmm.tvv mt8, v8,  v24\n"
-        
-        "vtmv.v.t v2, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
-        "vtmv.v.t v3, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
-        "vtfmm.tvv mt8, v9,  v25\n"
-
-        "vtmv.v.t v4, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
-        "vtmv.v.t v5, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
-        "vtfmm.tvv mt8, v10,  v26\n"
-
-        "vtmv.v.t v6, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
-        "vtmv.v.t v7, %[tss12]\n" "addi %[tss12], %[tss12], 1\n"
-        "vtfmm.tvv mt8, v11,  v27\n"
-
         "vse32.v v0, (%[p11])\n" "addi %[p11], %[p11], 512\n"
-        "vtmv.v.t v16, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtmv.v.t v17, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtfmm.tvv mt8, v12,  v28\n"
-
-        "vtmv.v.t v18, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtmv.v.t v19, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtfmm.tvv mt8, v13,  v29\n"
-
-        "vtmv.v.t v20, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtmv.v.t v21, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtfmm.tvv mt8, v14,  v30\n"
-
-        "vtmv.v.t v22, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtmv.v.t v23, %[loop]\n"  "addi %[loop], %[loop], 1\n"
-        "vtfmm.tvv mt8, v15,  v31\n"
+        "vtmv.v.t v16, %[loop]\n" "addi %[loop], %[loop], 8\n"
         "vse32.v v16, (%[p11])\n" "addi %[p11], %[p11], 1536\n"
         "mv %[tss12], %[loop]\n"
-        "vtzero mt0\n"
 
         "addi %[blocks], %[blocks], -1\n"
         "beqz %[blocks], 7f\n"
@@ -394,6 +194,9 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         // K-Group 0
         // vle A0
         // vle B0
+        "vtzero mt0\n"
+        "vtzero mt4\n"
+        "vtzero mt12\n"
         "sub %[loop], %[b1p], %[b0p]\n"
         "sub %[a0p], %[a0p], %[loop]\n"
         "vle32.v v0,  (%[a0p])\n"
@@ -402,119 +205,47 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
 
         // vtmv mt8 (row0 - row7) + vse || next block vtfmm mt0, A0, B0
         // vle B1
-        "vtmv.v.t v8,  %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v9,  %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
+        "vtmv.v.t v8,  %[tss8]\n" "addi %[tss8], %[tss8], 8\n"
         "vtfmm.tvv mt0, v0, v16\n"
-
-        "vtmv.v.t v10, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v11, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtfmm.tvv mt0, v1, v17\n"
-
-        "vtmv.v.t v12, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v13, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtfmm.tvv mt0, v2, v18\n"
-
-        "vtmv.v.t v14, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v15, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtfmm.tvv mt0, v3, v19\n"
-
-        "vtzero mt4\n"
-        "vse32.v v8, (%[p10])\n"  "addi %[p10], %[p10], 512\n"
-        "vtfmm.tvv mt0, v4, v20\n"
-
-        "vtfmm.tvv mt0, v5, v21\n"
         "add %[b1p], %[b1p], %[loop]\n"
-        "vtfmm.tvv mt0, v6, v22\n"
-        
+        "vse32.v v8, (%[p10])\n"  "addi %[p10], %[p10], 512\n"
         "vle32.v v24, (%[b1p])\n" "addi %[b1p], %[b1p], 512\n"
-        "vtfmm.tvv mt0, v7, v23\n"
 
         // vtmv mt8 (row8 - row15) + vse || next block vtfmm mt4, A0, B1
         // vle A1
-        "vtmv.v.t v8,  %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v9,  %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
+        "vtmv.v.t v8,  %[tss8]\n" "addi %[tss8], %[tss8], 8\n"
         "vtfmm.tvv mt4, v0, v24\n"
-
-        "vtmv.v.t v10, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v11, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtfmm.tvv mt4, v1, v25\n"
-        
-        "vtmv.v.t v12, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v13, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtfmm.tvv mt4, v2, v26\n"
-
-        "vtmv.v.t v14, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v15, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtfmm.tvv mt4, v3, v27\n"
-
         "vse32.v v8, (%[p10])\n"  "addi %[p10], %[p10], 1536\n"
-        "vtfmm.tvv mt4, v4, v28\n"
-
         "sub %[a1p], %[a1p], %[loop]\n"
-        "vtfmm.tvv mt4, v5, v29\n"
-
-        "vtfmm.tvv mt4, v6, v30\n"
         "vle32.v v8, (%[a1p])\n"  "addi %[a1p], %[a1p], 512\n"
+        "vtzero mt8\n"
 
         // preload vle A0
         // preload vle B0
         // next block vtfmm mt8, A1, B0
-        "vtfmm.tvv mt4, v7, v31\n"     
         "addi %[a0p], %[a0p], 512\n"
         "vle32.v v0,  (%[a0p])\n"
-        "vtzero mt8\n"
         "vtfmm.tvv mt8, v8,  v16\n"
         "addi %[a0p], %[a0p], 512\n"
-        "vtfmm.tvv mt8, v9,  v17\n"
-        "vtzero mt12\n"
-        "vtfmm.tvv mt8, v10,  v18\n"
         "addi %[b0p], %[b0p], 512\n"
-        "vtfmm.tvv mt8, v11,  v19\n"
-        "vtfmm.tvv mt8, v12,  v20\n"
-        "vtfmm.tvv mt8, v13,  v21\n"
         "vle32.v v16,  (%[b0p])\n"
-        "vtfmm.tvv mt8, v14,  v22\n"
         "addi %[b0p], %[b0p], 512\n"
-        "vtfmm.tvv mt8, v15,  v23\n"
 
         // next block vtfmm mt12, A1, B1
         "addi %[tss0], %[tss0], -16\n"
         "vtfmm.tvv mt12, v8,  v24\n"
         "addi %[tss4], %[tss4], -16\n"
-        "vtfmm.tvv mt12, v9,  v25\n"
         "addi %[tss12], %[tss12], -16\n"
-        "vtfmm.tvv mt12, v10, v26\n"
         "addi %[tss8], %[tss8], -16\n"
-        "vtfmm.tvv mt12, v11, v27\n"
-        "vtfmm.tvv mt12, v12, v28\n"
-        "vtfmm.tvv mt12, v13, v29\n"
-        "vtfmm.tvv mt12, v14, v30\n"
-        "vtfmm.tvv mt12, v15, v31\n"
         "j 9b\n"
 
         // Final block: compact 16-row mt8 store loop.
         "7:\n"
 
-        "vtmv.v.t v0, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v1, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v2, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v3, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v4, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v5, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v6, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v7, %[tss8]\n"  "addi %[tss8], %[tss8], 1\n"
-
+        "vtmv.v.t v0, %[tss8]\n"  "addi %[tss8], %[tss8], 8\n"
         "vse32.v v0, (%[p10])\n"
         "addi %[p10], %[p10], 512\n"
-        "vtmv.v.t v8,  %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v9,  %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v10, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v11, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v12, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v13, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v14, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-        "vtmv.v.t v15, %[tss8]\n" "addi %[tss8], %[tss8], 1\n"
-
+        "vtmv.v.t v8,  %[tss8]\n" "addi %[tss8], %[tss8], 8\n"
         "vse32.v v8, (%[p10])\n"
         "8:\n"
 
