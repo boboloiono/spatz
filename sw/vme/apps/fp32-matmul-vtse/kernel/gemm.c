@@ -61,6 +61,7 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
     const uintptr_t TM = 16;
     const uintptr_t TN = 16;
     const uintptr_t TK = 8;
+    const uintptr_t middle_k_groups = (uintptr_t)gemm_l.K / 8 - 3;
     uintptr_t block_counter = (uintptr_t)col_blocks;
     uintptr_t loop_counter;
 
@@ -137,7 +138,8 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         // K-Group 1 to N-2
         // vle B0
         // vtfmm mt0
-        "li %[loop], 5\n"
+        "mv %[loop], %[middle_k_groups]\n"
+        "beqz %[loop], 3f\n"
         "1:\n"
         "vtfmm.tvv mt0, v0, v16\n"
         "vtfmm.tvv mt0, v1, v17\n"
@@ -190,6 +192,7 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         "vtfmm.tvv mt12, v14, v30\n"
         "vtfmm.tvv mt12, v15, v31\n"
         "bnez %[loop], 1b\n"
+        "3:\n"
 
         // K-Group N-1 & K-Group N
         // vle B0
@@ -224,7 +227,9 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         // vle B1 (reuse A0)
         // vtfmm mt4        
         "vtfmm.tvv mt4, v0, v16\n"
+
         
+
         "vle32.v v24,  (%[b1p])\n"
         "addi %[b1p], %[b1p], 512\n"
 
@@ -493,6 +498,7 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         "vtse32 %[tss12], (%[p11])\n"
         "add %[p11], %[p11], %[c_stride]\n"
         "addi %[tss12], %[tss12], 1\n"
+        "vtzero mt0\n"
 
         "addi %[blocks], %[blocks], -1\n"
         "beqz %[blocks], 7f\n"
@@ -502,7 +508,6 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
         "vle32.v v0,  (%[a0p])\n"
         "add %[b0p], %[b0p], %[loop]\n"
         "vle32.v v16,  (%[b0p])\n"
-        "vtzero mt0\n"
         "sub %[a1p], %[a1p], %[loop]\n"
         "add %[b1p], %[b1p], %[loop]\n"
 
@@ -670,6 +675,7 @@ __attribute__((noinline, aligned(64))) void gemm_fp32(
           [vtype] "r"(matrix_vtype),
           [tn] "r"(TN),
           [tm] "r"(TM),
-          [tk] "r"(TK)
+          [tk] "r"(TK),
+          [middle_k_groups] "r"(middle_k_groups)
         : "memory");
 }

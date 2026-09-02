@@ -101,7 +101,7 @@ int main(void)
     if (cid < active_cores) {
         uint32_t t0 = get_cycle();
         gemm_fp32(C, Apack, Bpack, ti_lo, ti_hi);
-        // wait_spatz();
+        wait_spatz();
         uint32_t t1 = get_cycle();
         core_cycles[cid] = t1 - t0;
     } else {
