@@ -47,6 +47,13 @@ ifeq ($(BUF_FPU),1)
 	DEFS += -DBUF_FPU
 endif
 
+# Indexed block loads for VQ kernels; enable only with matching opcode definitions.
+ENABLE_VLXBLK ?= 0
+ifeq ($(ENABLE_VLXBLK),1)
+	DEFS += -DENABLE_VLXBLK
+	SPATZ_CLUSTER_CFG_DEFINES += -DENABLE_VLXBLK=1
+endif
+
 ifeq ($(SPATZ_CLUSTER_VENTAGLIO),1)
 	DEFS += -DVENTAGLIO
 	BENDER_CFG_TARGETS += -t ventaglio

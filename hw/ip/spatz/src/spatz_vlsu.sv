@@ -86,6 +86,13 @@ module spatz_vlsu
   logic       mem_spatz_req_valid;
   logic       mem_spatz_req_ready;
 
+  // For indexed operations op_mem.ew is the index EEW and the data EEW is
+  // VSEW.  For all other memory operations op_mem.ew is the data EEW decoded
+  // from the instruction.
+  vew_e req_data_ew;
+  assign req_data_ew = (spatz_req_i.op inside {VLXE, VSXE, VLXBLK}) ?
+      spatz_req_i.vtype.vsew : spatz_req_i.op_mem.ew;
+
   logic spatz_req_ready;
 
   spill_register #(
@@ -101,11 +108,11 @@ module spatz_vlsu
     .ready_i(mem_spatz_req_ready                            )
   );
 
-  // Convert the vl to number of bytes for all element widths
+  // Convert the vl to number of bytes using the memory data EEW.
   always_comb begin: proc_spatz_req
     spatz_req_d = spatz_req_i;
 
-    unique case (spatz_req_i.vtype.vsew)
+    unique case (req_data_ew)
       EW_8: begin
         spatz_req_d.vl     = spatz_req_i.vl;
         spatz_req_d.vstart = spatz_req_i.vstart;
@@ -152,6 +159,18 @@ module spatz_vlsu
   logic mem_is_indexed;
   assign mem_is_indexed = mem_spatz_req_valid &&
                           ((mem_spatz_req.op == VLXE) || (mem_spatz_req.op == VSXE));
+
+  logic mem_is_indexed_blk, mem_is_indexed_any;
+`ifdef ENABLE_VLXBLK
+  assign mem_is_indexed_blk = mem_spatz_req_valid && (mem_spatz_req.op == VLXBLK);
+`else
+  assign mem_is_indexed_blk = 1'b0;
+`endif
+  assign mem_is_indexed_any = mem_is_indexed || mem_is_indexed_blk;
+
+  vew_e mem_data_ew;
+  assign mem_data_ew = mem_is_indexed_any ? mem_spatz_req.vtype.vsew :
+      mem_spatz_req.op_mem.ew;
 
   /////////////
   //  State  //
@@ -336,6 +355,7 @@ module spatz_vlsu
     logic is_load;
     logic is_strided;
     logic is_indexed;
+    logic is_indexed_blk;
   } commit_metadata_t;
 
   commit_metadata_t commit_insn_d;
@@ -367,13 +387,14 @@ module spatz_vlsu
   assign commit_insn_d     = '{
       id        : mem_spatz_req.id,
       vd        : mem_spatz_req.vd,
-      vsew      : mem_spatz_req.vtype.vsew,
+      vsew      : mem_data_ew,
       vl        : mem_spatz_req.vl,
       vstart    : mem_spatz_req.vstart,
       rs1       : mem_spatz_req.rs1[2:0],
       is_load   : mem_spatz_req.op_mem.is_load,
       is_strided: mem_is_strided,
-      is_indexed: mem_is_indexed
+      is_indexed: mem_is_indexed,
+      is_indexed_blk: mem_is_indexed_blk
   };
 
   assign spatz_req_ready_o = spatz_req_ready & !commit_insn_full;
@@ -458,6 +479,7 @@ module spatz_vlsu
 
   // Calculate the memory address for each memory port
   addr_offset_t [NrMemPorts-1:0] mem_req_addr_offset;
+  logic [NrMemPorts-1:0] blk_idx_word_ok;
   for (genvar port = 0; port < NrMemPorts; port++) begin: gen_mem_req_addr
     logic [31:0] addr;
     logic [31:0] stride;
@@ -474,27 +496,59 @@ module spatz_vlsu
     logic [$bits(vew_e)-1:0] log2_num_el_maxew;
     logic [$bits(vew_e)  :0] log2_num_idx_maxew_bytes;
     logic [2 * MAXEW     :0] num_idx_maxew_bytes;
+    vlen_t data_byte_idx, data_elem_idx, blk_idx, blk_elem_off, idx_gbyte;
+    logic [31:0] index_value;
 
-    assign log2_num_el_maxew = MAXEW - mem_spatz_req.vtype.vsew;                       // Number of elements in MAXEW
+    assign log2_num_el_maxew = MAXEW - mem_data_ew;                                    // Number of elements in MAXEW
     assign log2_num_idx_maxew_bytes = log2_num_el_maxew + mem_spatz_req.op_mem.ew;
     assign num_idx_maxew_bytes = 1'b1 << log2_num_idx_maxew_bytes;                     // Number of indices for MAXEW/SEW elements in bytes
 
+    always_comb begin : gen_blk_idx
+      data_byte_idx = '0;
+      data_elem_idx = '0;
+      blk_idx       = '0;
+      blk_elem_off  = '0;
+      if (mem_is_indexed_blk) begin
+        data_byte_idx = {mem_counter_q[port][$bits(vlen_t)-1:MAXEW] << $clog2(NrMemPorts),
+                         mem_counter_q[port][int'(MAXEW)-1:0]} + (port << MAXEW);
+        data_elem_idx = data_byte_idx >> mem_data_ew;
+        blk_idx       = data_elem_idx >> mem_spatz_req.op_mem.blk_log2;
+        blk_elem_off  = data_elem_idx & ((vlen_t'(1) << mem_spatz_req.op_mem.blk_log2) - 1);
+      end
+    end
+    assign idx_gbyte = mem_is_indexed_blk
+        ? vlen_t'(blk_idx << mem_spatz_req.op_mem.ew)
+        : vlen_t'((port << log2_num_idx_maxew_bytes) +
+            (idx_offset & (num_idx_maxew_bytes - 1)) +
+            ((idx_offset >> log2_num_idx_maxew_bytes) << log2_num_idx_maxew_bytes) * NrMemPorts);
+    assign blk_idx_word_ok[port] =
+        (vreg_elem_t'(idx_gbyte >> $clog2(N_FU*ELENB)) == vs2_elem_id_q);
+
     always_comb begin
       word_index = '0;
-      stride = mem_is_strided ? mem_spatz_req.rs2 >> mem_spatz_req.vtype.vsew : 'd1;
+      stride = mem_is_strided ? mem_spatz_req.rs2 >> mem_data_ew : 'd1;
+      index_value = '0;
 
-      if (mem_is_indexed) begin
+      if (mem_is_indexed_any) begin
         // Compute word index from port offset, normalized index, and wrapped indices
-        word_index = (port << log2_num_idx_maxew_bytes) +
-                      (idx_offset & (num_idx_maxew_bytes - 1)) +
-                      ((idx_offset >> log2_num_idx_maxew_bytes) << log2_num_idx_maxew_bytes) * NrMemPorts;
+        word_index = idx_gbyte[idx_width(N_FU*ELENB)-1:0];
 
         // Index
-        unique case (mem_spatz_req.op_mem.ew)
-          EW_8 : offset   = $signed(vrf_rdata_i[1][8 * word_index +: 8]);
-          EW_16: offset   = $signed(vrf_rdata_i[1][8 * word_index +: 16]);
-          default: offset = $signed(vrf_rdata_i[1][8 * word_index +: 32]);
-        endcase
+        if (mem_is_indexed_blk) begin
+          unique case (mem_spatz_req.op_mem.ew)
+            EW_8 : index_value = {24'b0, vrf_rdata_i[1][8 * word_index +: 8]};
+            EW_16: index_value = {16'b0, vrf_rdata_i[1][8 * word_index +: 16]};
+            default: index_value = vrf_rdata_i[1][8 * word_index +: 32];
+          endcase
+          offset = (index_value << (mem_spatz_req.op_mem.blk_log2 + mem_data_ew)) +
+                   (blk_elem_off << mem_data_ew);
+        end else begin
+          unique case (mem_spatz_req.op_mem.ew)
+            EW_8 : offset   = $signed(vrf_rdata_i[1][8 * word_index +: 8]);
+            EW_16: offset   = $signed(vrf_rdata_i[1][8 * word_index +: 16]);
+            default: offset = $signed(vrf_rdata_i[1][8 * word_index +: 32]);
+          endcase
+        end
       end else begin
         offset = ({mem_counter_q[port][$bits(vlen_t)-1:MAXEW] << $clog2(NrMemPorts), mem_counter_q[port][int'(MAXEW)-1:0]} + (port << MAXEW)) * stride;
       end
@@ -577,11 +631,11 @@ module spatz_vlsu
 
   // Do we have to access every single element on its own
   logic mem_is_single_element_operation;
-  assign mem_is_single_element_operation = mem_is_addr_unaligned || mem_is_strided || mem_is_indexed || !mem_is_vstart_zero;
+  assign mem_is_single_element_operation = mem_is_addr_unaligned || mem_is_strided || mem_is_indexed_any || !mem_is_vstart_zero;
 
   // How large is a single element (in bytes)
   logic [3:0] mem_single_element_size;
-  assign mem_single_element_size = 1'b1 << mem_spatz_req.vtype.vsew;
+  assign mem_single_element_size = 1'b1 << mem_data_ew;
 
   // How large is an index element (in bytes)
   logic [3:0] mem_idx_single_element_size;
@@ -593,7 +647,7 @@ module spatz_vlsu
 
   // Do we have to access every single element on its own
   logic commit_is_single_element_operation;
-  assign commit_is_single_element_operation = commit_is_addr_unaligned || commit_insn_q.is_strided || commit_insn_q.is_indexed || (commit_insn_q.vstart != '0);
+  assign commit_is_single_element_operation = commit_is_addr_unaligned || commit_insn_q.is_strided || commit_insn_q.is_indexed || commit_insn_q.is_indexed_blk || (commit_insn_q.vstart != '0);
 
   // Size of an element in the VRF
   logic [3:0] commit_single_element_size;
@@ -834,11 +888,16 @@ module spatz_vlsu
     vrf_req_d.rsp_valid = commit_insn_valid && &commit_finished_d && mem_insn_finished_d[commit_insn_q.id];
 
     // Request indexes
-    vrf_re_o[1] = mem_is_indexed;
+    vrf_re_o[1] = mem_is_indexed_any;
 
     // Count which vs2 element we should load (indexed loads)
     vs2_elem_id_d = vs2_elem_id_q;
-    if (&(fetch_next_idx ^ ~mem_operation_valid) && mem_is_indexed)
+    if (mem_is_indexed_blk) begin
+      // Reuse one index for all elements of a block.
+      if (|(mem_operation_valid & ~blk_idx_word_ok) &&
+          !(|(mem_operation_valid & blk_idx_word_ok)))
+        vs2_elem_id_d = vs2_elem_id_q + 1;
+    end else if (&(fetch_next_idx ^ ~mem_operation_valid) && mem_is_indexed)
       vs2_elem_id_d = vs2_elem_id_q + 1;
     if (mem_spatz_req_ready)
       vs2_elem_id_d = '0;
@@ -877,7 +936,7 @@ module spatz_vlsu
           rob_pop[port] = rob_rvalid[port] && vrf_req_valid_d && vrf_req_ready_d && commit_counter_en[port];
 
           // Shift data to correct position if we have a strided memory access
-          if (commit_insn_q.is_strided || commit_insn_q.is_indexed)
+          if (commit_insn_q.is_strided || commit_insn_q.is_indexed || commit_insn_q.is_indexed_blk)
             if (MAXEW == EW_32)
               unique case (commit_counter_q[port][1:0])
                 2'b01: data   = {data[23:0], data[31:24]};
@@ -928,7 +987,9 @@ module spatz_vlsu
 `endif
         if (!rob_full[port] && !offset_queue_full[port] && mem_operation_valid[port]) begin
           rob_req_id[port]     = spatz_mem_req_ready[port] & spatz_mem_req_valid[port];
-          mem_req_lvalid[port] = (!mem_is_indexed || vrf_rvalid_i[1]) && mem_spatz_req.op_mem.is_load;
+          mem_req_lvalid[port] = (!mem_is_indexed_any ||
+              (vrf_rvalid_i[1] && (!mem_is_indexed_blk || blk_idx_word_ok[port]))) &&
+              mem_spatz_req.op_mem.is_load;
           mem_req_id[port]     = rob_id[port];
           mem_req_last[port]   = mem_operation_last[port];
         end
@@ -953,7 +1014,7 @@ module spatz_vlsu
           automatic logic [63:0] data = rob_rdata[port];
 
           // Shift data to lsb if we have a strided or indexed memory access
-          if (mem_is_strided || mem_is_indexed)
+          if (mem_is_strided || mem_is_indexed_any)
             if (MAXEW == EW_32)
               unique case (mem_counter_q[port][1:0])
                 2'b01: data = {data[7:0], data[31:8]};
@@ -1002,7 +1063,7 @@ module spatz_vlsu
           if (mem_is_single_element_operation) begin
             automatic logic [$clog2(ELENB)-1:0] shift = (mem_is_strided || mem_is_indexed) ? mem_req_addr_offset[port] : mem_counter_q[port][$clog2(ELENB)-1:0] + commit_insn_q.rs1[int'(MAXEW)-1:0];
             automatic logic [MemDataWidthB-1:0] mask  = '1;
-            case (mem_spatz_req.vtype.vsew)
+            case (mem_data_ew)
               EW_8 : mask   = 1;
               EW_16: mask   = 3;
               EW_32: mask   = 15;
@@ -1041,7 +1102,7 @@ module spatz_vlsu
     assign spatz_mem_req[port].id    = mem_req_id[port];
     assign spatz_mem_req[port].addr  = mem_req_addr[port];
     assign spatz_mem_req[port].mode  = '0; // Request always uses user privilege level
-    assign spatz_mem_req[port].size  = mem_spatz_req.vtype.vsew[1:0];
+    assign spatz_mem_req[port].size  = mem_data_ew[1:0];
     assign spatz_mem_req[port].write = !mem_is_load;
     assign spatz_mem_req[port].strb  = mem_req_strb[port];
     assign spatz_mem_req[port].data  = mem_req_data[port];

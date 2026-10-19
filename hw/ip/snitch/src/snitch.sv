@@ -2480,6 +2480,19 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
           illegal_inst = 1'b1;
         end
       end
+`ifdef ENABLE_VLXBLK
+      riscv_instr::VSETBLKLEN: begin
+        if (RVV) begin
+          write_rd        = 1'b0;
+          uses_rd         = 1'b0;
+          acc_qvalid_o    = valid_instr;
+          opa_select      = Reg;
+          acc_register_rd = 1'b0;
+        end else begin
+          illegal_inst = 1'b1;
+        end
+      end
+`endif
       // 2 source registers (rs1, rs2) and one destination register (rd)
       riscv_instr::VSETVL: begin
         if (RVV) begin
@@ -2790,6 +2803,10 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
       riscv_instr::VLUXEI8_V,
       riscv_instr::VLUXEI16_V,
       riscv_instr::VLUXEI32_V,
+`ifdef ENABLE_VLXBLK
+      riscv_instr::VLXBLKEI8_V,
+      riscv_instr::VLXBLKEI16_V,
+`endif
       riscv_instr::VLUXEI64_V: begin
         if (RVV) begin
           write_rd        = 1'b0;

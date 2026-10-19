@@ -110,6 +110,9 @@ module spatz_controller
   // CSR registers
   vlen_t   vstart_d,  vstart_q;
   vlen_t   vl_d,      vl_q;
+`ifdef ENABLE_VLXBLK
+  logic [3:0] blk_log2_d, blk_log2_q;
+`endif
   vtype_t  vtype_d,   vtype_q;
 `ifdef VENTAGLIO
   logic    vtl_en_d,  vtl_en_q;     // VTL extension enable (1: VTL enabled; 0: VTL disabled)
@@ -119,6 +122,9 @@ module spatz_controller
 
   `FF(vstart_q,  vstart_d,  '0)
   `FF(vl_q,      vl_d,      '0)
+`ifdef ENABLE_VLXBLK
+  `FF(blk_log2_q, blk_log2_d, 4'd3)
+`endif
   `FF(vtype_q,   vtype_d,   '{vill: 1'b1, altfmt: 1'b0, vsew: EW_8, vlmul: LMUL_1, default: '0})
 `ifdef VENTAGLIO
   `FF(vtl_en_q,  vtl_en_d, 1'b0)     // VTL extension enable
@@ -140,6 +146,9 @@ module spatz_controller
 
     vstart_d   = vstart_q;
     vl_d       = vl_q;
+`ifdef ENABLE_VLXBLK
+    blk_log2_d = blk_log2_q;
+`endif
     vtype_d    = vtype_q;
 `ifdef VENTAGLIO
     vtl_en_d   = vtl_en_q;   // VTL extension enable
@@ -218,6 +227,17 @@ module spatz_controller
           end
         end
       end // spatz_req.op == VCFG
+
+`ifdef ENABLE_VLXBLK
+      if (spatz_req.op == VSETBLKLEN) begin
+        // Match vq-DATE: normalize to the largest power of two <= rs1.
+        // A zero operand selects one element per block.
+        blk_log2_d = '0;
+        for (int unsigned b = 0; b < $bits(vlen_t); b++)
+          if (spatz_req.rs1[b])
+            blk_log2_d = 4'(b);
+      end
+`endif
 
       // Matrix configuration instructions that modify vector CSR state.
       else if (spatz_req.op == VMCFG) begin
@@ -1023,7 +1043,7 @@ module spatz_controller
       end
 
       // Is this a risky instruction which should not chain?
-      if (spatz_req.op inside {VSLIDEUP, VLSE, VLXE, VSSE, VSXE})
+      if (spatz_req.op inside {VSLIDEUP, VLSE, VLXE, VLXBLK, VSSE, VSXE})
         scoreboard_d[spatz_req.id].prevent_chaining = 1'b1;
 
       // Is this a narrowing or widening instruction?
@@ -1287,6 +1307,10 @@ module spatz_controller
           // "use the decoded ls_vd"; when VENTAGLIO=on the VTL block below
           // may further remap `vd` based on the sparsity ratio.
           spatz_req.vd     = spatz_req.op_vtl.old_vd;
+`ifdef ENABLE_VLXBLK
+          if (spatz_req.op == VLXBLK)
+            spatz_req.op_mem.blk_log2 = blk_log2_q;
+`endif
 `ifdef VENTAGLIO
           // If VTL is enabled, we add vtl_cfg to support vlx instruction
           if (vtl_en_q) begin
@@ -1520,10 +1544,13 @@ module spatz_controller
         end
         rsp_d.id = spatz_req.rd;
         rsp_valid_d = 1'b1;
-      end else begin
+      end else if (spatz_req.op == VCFG) begin
         // VCFG: change configuration and send back vl
         rsp_d.id    = spatz_req.rd;
         rsp_d.data  = elen_t'(vl_d);
+        rsp_valid_d = 1'b1;
+      end else if (spatz_req.op == VSETBLKLEN) begin
+        rsp_d.id    = spatz_req.rd;
         rsp_valid_d = 1'b1;
       end
     end else if (vfu_rsp_valid) begin

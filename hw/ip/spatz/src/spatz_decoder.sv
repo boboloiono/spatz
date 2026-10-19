@@ -314,6 +314,33 @@ module spatz_decoder
           endcase // decoder_req_i.instr
         end
 
+`ifdef ENABLE_VLXBLK
+        riscv_instr::VLXBLKEI8_V,
+        riscv_instr::VLXBLKEI16_V: begin
+          spatz_req.op             = VLXBLK;
+          spatz_req.ex_unit        = LSU;
+          spatz_req.op_mem.is_load = 1'b1;
+          spatz_req.op_mem.vm      = 1'b1;
+          spatz_req.op_vtl.old_vd  = decoder_req_i.instr[11:7];
+          spatz_req.use_vd         = 1'b1;
+          spatz_req.rs1            = decoder_req_i.rs1;
+          spatz_req.vs2            = decoder_req_i.instr[24:20];
+          spatz_req.use_vs2        = 1'b1;
+          spatz_req.vtype.vsew     = decoder_req_i.vtype.vsew;
+          unique case (decoder_req_i.instr[14:12])
+            3'b000: spatz_req.op_mem.ew = EW_8;
+            3'b101: spatz_req.op_mem.ew = EW_16;
+            default: illegal_instr = 1'b1;
+          endcase
+        end
+
+        riscv_instr::VSETBLKLEN: begin
+          spatz_req.op      = VSETBLKLEN;
+          spatz_req.ex_unit = CON;
+          spatz_req.rs1     = decoder_req_i.rs1;
+        end
+`endif
+
         // Vector instruction
         riscv_instr::VADD_VV,
         riscv_instr::VADD_VX,
