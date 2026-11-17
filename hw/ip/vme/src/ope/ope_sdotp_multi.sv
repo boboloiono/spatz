@@ -12,9 +12,9 @@
 //
 // SPDX-License-Identifier: SHL-0.51
 
-// Authors: Luca Bertaccini <lbertaccini@iis.ee.ethz.ch>
-//          Stefan Mach <smach@iis.ee.ethz.ch>
-//          Gianna Paulin <pauling@iis.ee.ethz.ch>
+// Author: Luca Bertaccini, ETH Zürich
+// Author: Stefan Mach, ETH Zürich
+// Author: Gianna Paulin, ETH Zürich
 
 // This unit can be used to compute the following operations:
 // - EXSDOTP: expanding dot product with accumulation
@@ -42,7 +42,7 @@
 
 `include "common_cells/registers.svh"
 
-module opope_sdotp_multi #(
+module ope_sdotp_multi #(
   // One-hot config string: | FP32 | FP64 | FP16 | FP8 | FP16ALT | FP8ALT |
   parameter fpnew_pkg::fmt_logic_t   SrcDotpFpFmtConfig = '1, // FP32 and wider formats are not allowed
                                                               // Supported source formats (FP8, FP8ALT, FP16, FP16ALT)
@@ -280,7 +280,7 @@ module opope_sdotp_multi #(
   logic [2:0]          effective_subtraction;
   logic                tentative_sign;
 
-  opope_sdotp_input_prep #(
+  ope_sdotp_input_prep #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig ),
     .DstDotpFpFmtConfig ( DstDotpFpFmtConfig )
   ) i_fpnew_sdotp_input_prep (
@@ -321,7 +321,7 @@ module opope_sdotp_multi #(
   fpnew_pkg::status_t   special_status;
   logic                 result_is_special;
 
-  opope_sdotp_special_case #(
+  ope_sdotp_special_case #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig ),
     .DstDotpFpFmtConfig ( DstDotpFpFmtConfig )
   ) i_fpnew_sdotp_special_case (
@@ -360,7 +360,7 @@ module opope_sdotp_multi #(
   logic                            addend_max_sign;
   logic [SHIFT_AMOUNT_WIDTH-1:0]   addend_shamt;
 
-  opope_sdotp_exponent_prep #(
+  ope_sdotp_exponent_prep #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig ),
     .DstDotpFpFmtConfig ( DstDotpFpFmtConfig )
   ) i_fpnew_sdotp_exponent_prep (
@@ -551,7 +551,7 @@ module opope_sdotp_multi #(
   // ------------------
   logic   [2*PRECISION_BITS-1:0] product_x, product_y;  // the p*p product is 2p-bit wide
 
-  opope_sdotp_product #(
+  ope_sdotp_product #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig )
   ) i_fpnew_sdotp_product (
     .operand_a_i ( operand_a_q2 ),
@@ -752,7 +752,7 @@ module opope_sdotp_multi #(
   logic                                           sticky_before_add_z;
   logic                                           final_sign_zero;
 
-  opope_sdotp_first_shift_add #(
+  ope_sdotp_first_shift_add #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig ),
     .DstDotpFpFmtConfig ( DstDotpFpFmtConfig )
   ) i_fpnew_sdotp_first_shift_add (
@@ -935,7 +935,7 @@ module opope_sdotp_multi #(
   logic                                           sum_carry_z;
   logic                                           final_sign_z;
 
-  opope_sdotp_three_way_add2 #(
+  ope_sdotp_three_way_add2 #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig ),
     .DstDotpFpFmtConfig ( DstDotpFpFmtConfig )
   ) i_fpnew_sdotp_three_way_add2 (
@@ -1063,7 +1063,7 @@ module opope_sdotp_multi #(
   logic        [LZC_RESULT_WIDTH-1:0] leading_zero_count;     // the number of leading zeroes
   logic                               lzc_zeroes;             // in case only zeroes found
 
-  opope_sdotp_norm_lzc #(
+  ope_sdotp_norm_lzc #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig ),
     .DstDotpFpFmtConfig ( DstDotpFpFmtConfig )
   ) i_fpnew_sdotp_norm_lzc (
@@ -1213,7 +1213,7 @@ module opope_sdotp_multi #(
 
   logic signed [DST_EXP_WIDTH-1:0] final_exponent;
 
-  opope_sdotp_normalization #(
+  ope_sdotp_normalization #(
     .SrcDotpFpFmtConfig ( SrcDotpFpFmtConfig ),
     .DstDotpFpFmtConfig ( DstDotpFpFmtConfig )
   ) i_fpnew_sdotp_normalization (
@@ -1244,7 +1244,7 @@ module opope_sdotp_multi #(
   logic [DST_WIDTH-1:0] result_d;
   fpnew_pkg::status_t   status_d;
 
-  opope_sdotp_rounding_assembly #(
+  ope_sdotp_rounding_assembly #(
     .SrcDotpFpFmtConfig          ( SrcDotpFpFmtConfig          ),
     .DstDotpFpFmtConfig          ( DstDotpFpFmtConfig          ),
     .StochasticRndImplementation ( StochasticRndImplementation )

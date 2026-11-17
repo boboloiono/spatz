@@ -14,6 +14,9 @@ module spatz_controller
 `ifdef VENTAGLIO
   import vtl_pkg::*;
 `endif
+`ifdef VME
+  import vme_pkg::*;
+`endif
   import fpnew_pkg::roundmode_e;
   import fpnew_pkg::fmt_mode_t;
   #(

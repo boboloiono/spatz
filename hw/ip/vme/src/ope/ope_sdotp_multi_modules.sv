@@ -2,14 +2,18 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE_HW for details.
 // SPDX-License-Identifier: SHL-0.51
 //
-// Combinational helpers for opope_sdotp_multi.
+// Author: Luca Bertaccini, ETH Zürich
+// Author: Stefan Mach, ETH Zürich
+// Author: Gianna Paulin, ETH Zürich
+//
+// Combinational helpers for ope_sdotp_multi.
 // All pipeline register banks remain in the top module.
 
 // ---------------------------------------------------------------------------
 // Product data path: adds implicit bits to the source mantissae and computes
 // the two p*p mantissa products (a*b, c*d).
 // ---------------------------------------------------------------------------
-module opope_sdotp_product #(
+module ope_sdotp_product #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   // Do not change
   localparam fpnew_pkg::fp_encoding_t SUPER_FORMAT = fpnew_pkg::super_format(SrcDotpFpFmtConfig),
@@ -71,7 +75,7 @@ endmodule
 // Normalization 1: build the LZC search vector from the second sum and count
 // its leading zeroes (cancellation detection).
 // ---------------------------------------------------------------------------
-module opope_sdotp_norm_lzc #(
+module ope_sdotp_norm_lzc #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t DstDotpFpFmtConfig = '1,
   // Do not change
@@ -130,7 +134,7 @@ endmodule
 // Second step of the three-way adder: W + Z with first-sum-zero bypass,
 // effective-subtraction detection for Z, and final sign resolution.
 // ---------------------------------------------------------------------------
-module opope_sdotp_three_way_add2 #(
+module ope_sdotp_three_way_add2 #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t DstDotpFpFmtConfig = '1,
   // Do not change
@@ -421,7 +425,7 @@ module opope_sdotp_three_way_add2 #(
   //
   //     sum_lower = {(~effective_subtraction_z_q && sum_carry_z_q), sum_z_q}
   //
-  // -- and opope_sdotp_multi wires the same effective_subtraction_z through the
+  // -- and ope_sdotp_multi wires the same effective_subtraction_z through the
   // same bank to both.  The effective-subtraction arm of this mux is therefore
   // ANDed with its own complement and cannot reach an output: dropping it leaves
   // sum_lower bit for bit identical.  What that buys is not the mux, it is the
@@ -446,7 +450,7 @@ endmodule
 // Normalization 2: large normalization shift based on the LZC result, 1-bit
 // small normalization, and final sticky-bit update.
 // ---------------------------------------------------------------------------
-module opope_sdotp_normalization #(
+module ope_sdotp_normalization #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t DstDotpFpFmtConfig = '1,
   // Do not change
@@ -529,25 +533,9 @@ module opope_sdotp_normalization #(
   // non-zero product lands in [100, 160], a zero product at -125 and the
   // accumulator in [1, 256].  ADDEND_EXP_POSITIVE = 1.
   // ==========================================================================
-  function automatic bit nonzero_addend_exponents_positive
-      (input fpnew_pkg::fmt_logic_t src_cfg, input fpnew_pkg::fmt_logic_t dst_cfg);
-    automatic int max_src_bias = 0;
-    automatic int min_dst_bias = 0;
-    automatic bit have_dst     = 1'b0;
-    for (int unsigned f = 0; f < fpnew_pkg::NUM_FP_FORMATS; f++) begin
-      if (src_cfg[f] && (int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f))) > max_src_bias))
-        max_src_bias = int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f)));
-      if (dst_cfg[f] && (!have_dst ||
-                         (int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f))) < min_dst_bias))) begin
-        min_dst_bias = int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f)));
-        have_dst     = 1'b1;
-      end
-    end
-    return have_dst && ((3 + min_dst_bias) >= (2*max_src_bias + 1));
-  endfunction
-
-  localparam bit ADDEND_EXP_POSITIVE =
-      nonzero_addend_exponents_positive(SrcDotpFpFmtConfig, DstDotpFpFmtConfig);
+  // The VME SDOTP datapath is fixed to FP16 products accumulated in FP32.
+  // Its non-zero addend exponent is always positive after rebiasing.
+  localparam bit ADDEND_EXP_POSITIVE = 1'b1;
 
   // ----------------
   // Normalization 2
@@ -851,7 +839,7 @@ endmodule
 // Rounding and result assembly: pre-round packing per format, fpnew_rounding,
 // sign injection, status flags, and special-case result selection.
 // ---------------------------------------------------------------------------
-module opope_sdotp_rounding_assembly #(
+module ope_sdotp_rounding_assembly #(
   parameter fpnew_pkg::fmt_logic_t   SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t   DstDotpFpFmtConfig = '1,
   parameter fpnew_pkg::rsr_impl_t    StochasticRndImplementation = fpnew_pkg::DEFAULT_NO_RSR,
@@ -1117,7 +1105,7 @@ endmodule
 // addend, first two-term adder (max + int), second-shift preparation of the
 // minimum addend, and all-zero sign resolution.
 // ---------------------------------------------------------------------------
-module opope_sdotp_first_shift_add #(
+module ope_sdotp_first_shift_add #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t DstDotpFpFmtConfig = '1,
   // Do not change
@@ -1233,25 +1221,9 @@ module opope_sdotp_first_shift_add #(
   // non-zero product lands in [100, 160], a zero product at -125 and the
   // accumulator in [1, 256].  ADDEND_EXP_POSITIVE = 1.
   // ==========================================================================
-  function automatic bit nonzero_addend_exponents_positive
-      (input fpnew_pkg::fmt_logic_t src_cfg, input fpnew_pkg::fmt_logic_t dst_cfg);
-    automatic int max_src_bias = 0;
-    automatic int min_dst_bias = 0;
-    automatic bit have_dst     = 1'b0;
-    for (int unsigned f = 0; f < fpnew_pkg::NUM_FP_FORMATS; f++) begin
-      if (src_cfg[f] && (int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f))) > max_src_bias))
-        max_src_bias = int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f)));
-      if (dst_cfg[f] && (!have_dst ||
-                         (int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f))) < min_dst_bias))) begin
-        min_dst_bias = int'(fpnew_pkg::bias(fpnew_pkg::fp_format_e'(f)));
-        have_dst     = 1'b1;
-      end
-    end
-    return have_dst && ((3 + min_dst_bias) >= (2*max_src_bias + 1));
-  endfunction
-
-  localparam bit ADDEND_EXP_POSITIVE =
-      nonzero_addend_exponents_positive(SrcDotpFpFmtConfig, DstDotpFpFmtConfig);
+  // The VME SDOTP datapath is fixed to FP16 products accumulated in FP32.
+  // Its non-zero addend exponent is always positive after rebiasing.
+  localparam bit ADDEND_EXP_POSITIVE = 1'b1;
 
   // ------------------
   // Shift data path
@@ -1699,7 +1671,7 @@ endmodule
 // Special case handling: NaN/inf detection and per-format special result,
 // status and bypass selection.
 // ---------------------------------------------------------------------------
-module opope_sdotp_special_case #(
+module ope_sdotp_special_case #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t DstDotpFpFmtConfig = '1,
   // Do not change
@@ -1865,7 +1837,7 @@ endmodule
 // exponent compare/sort, tentative sign/exponent and first alignment shift
 // amount.
 // ---------------------------------------------------------------------------
-module opope_sdotp_exponent_prep #(
+module ope_sdotp_exponent_prep #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t DstDotpFpFmtConfig = '1,
   // Do not change
@@ -2214,7 +2186,7 @@ endmodule
 // VSUM and destination operands, operation-dependent operand adjustment
 // (op_select), and input classification reductions.
 // ---------------------------------------------------------------------------
-module opope_sdotp_input_prep #(
+module ope_sdotp_input_prep #(
   parameter fpnew_pkg::fmt_logic_t SrcDotpFpFmtConfig = '1,
   parameter fpnew_pkg::fmt_logic_t DstDotpFpFmtConfig = '1,
   // Do not change

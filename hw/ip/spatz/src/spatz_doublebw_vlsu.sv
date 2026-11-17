@@ -292,7 +292,6 @@ module spatz_doublebw_vlsu
   tile_store_completion_t [NrParallelInstructions-1:0] tile_store_completion_d;
   tile_store_completion_t [NrParallelInstructions-1:0] tile_store_completion_q;
   tile_r_req_t tile_tss_req;
-  logic [3:0] tile_elem_bytes;
   logic [NrMemPorts-1:0] tile_load_pending_d, tile_load_pending_q;
   tile_chunk_cnt_t tile_store_req_count_d, tile_store_req_count_q;
   logic tile_mem_busy;
@@ -313,15 +312,12 @@ module spatz_doublebw_vlsu
   `FF(tile_store_req_count_q, tile_store_req_count_d, '0)
   `FF(tile_store_completion_q, tile_store_completion_d, '0)
 
-  // Tile moves are only legal with TEW equal to the accumulator element width
-  // (msetmtype rejects every other configuration), so TEW is a constant and all
-  // tile byte offsets below reduce to wiring.
-  localparam int unsigned TileTew = $clog2(AccElemBytes);
+  // Host decode checks that tile accesses match the fixed accumulator word.
+  // Inside the tile path, byte geometry is therefore compile-time constant.
+  localparam int unsigned AccElemLog2Bytes = $clog2(AccElemBytes);
   // A Tile word holds a complete tile line: no row is split across words.
-  localparam bit TileSingleWord = (TileWordBWidth >> TileTew) >= TileEdge;
-  logic [2:0] tile_tew;
-  assign tile_tew = 3'(TileTew);
-  assign tile_elem_bytes = 4'(1) << tile_tew;
+  localparam bit TileSingleWord =
+      (TileWordBWidth >> AccElemLog2Bytes) >= TileEdge;
   assign tile_mem_busy = (tile_state_q != Tile_Idle);
 
   /*------------------------------------------------------------*/
@@ -471,26 +467,27 @@ module spatz_doublebw_vlsu
   /*               Tile Accumulator Data Shaping                */
   /*------------------------------------------------------------*/
 
-  // A fixed-width Tile word can contain a runtime-dependent number of TEW
-  // elements. Rows wider than one Tile word are transferred in consecutive
+  // A fixed-width tile word contains a fixed number of accumulator elements.
+  // Rows wider than one tile word are transferred in consecutive
   // word segments; a column accesses the segment containing that column.
   tile_count_t tile_word_capacity;
   tile_count_t tile_req_elems;
   tile_dim_t   tile_req_col;
 
-  // Elements per Tile word: min(TileWordBWidth >> tew, TileEdge). Both bounds are
+  // Elements per tile word: min(TileWordBWidth / AccElemBytes, TileEdge). Both bounds are
   // powers of two, so the capacity is a shift and the word holding a column is
   // a mask of the row index (no dividers or multipliers by runtime values).
   localparam int unsigned TileWordBytesLog2 = $clog2(TileWordBWidth);
   localparam int unsigned TileEdgeLog2      = $clog2(TileEdge);
-  logic [$clog2(TileEdgeLog2+1)-1:0] tile_cap_log2;
+  localparam int unsigned TileCapacityLog2 =
+      ((TileWordBytesLog2 - AccElemLog2Bytes) > TileEdgeLog2) ?
+      TileEdgeLog2 : (TileWordBytesLog2 - AccElemLog2Bytes);
+  localparam tile_count_t TileWordCapacity = tile_count_t'(1) << TileCapacityLog2;
 
   always_comb begin : proc_tile_word_geometry
     tile_count_t remaining_elems;
 
-    tile_cap_log2 = ((TileWordBytesLog2 - tile_tew) > TileEdgeLog2) ?
-                    TileEdgeLog2 : (TileWordBytesLog2 - tile_tew);
-    tile_word_capacity = tile_count_t'(1) << tile_cap_log2;
+    tile_word_capacity = TileWordCapacity;
 
     if (TileSingleWord) begin
       tile_req_col = tile_dim_t'(0);
@@ -517,16 +514,16 @@ module spatz_doublebw_vlsu
     tile_row_write_word = tile_word_t'(0);
     tile_col_write_word = tile_ctx_q.row_buf;
     local_col = tile_count_t'(tile_ctx_q.access.row - tile_req_col);
-    row_start_byte = unsigned'(tile_req_col) << TileTew;
-    col_start_byte = unsigned'(local_col) << TileTew;
-    packed_row_byte = unsigned'(tile_ctx_q.row_idx) << TileTew;
+    row_start_byte = unsigned'(tile_req_col) << AccElemLog2Bytes;
+    col_start_byte = unsigned'(local_col) << AccElemLog2Bytes;
+    packed_row_byte = unsigned'(tile_ctx_q.row_idx) << AccElemLog2Bytes;
 
     for (int unsigned d = 0; d < TileWordBWidth; d++) begin
-      if (d < (unsigned'(tile_req_elems) << TileTew)) begin
+      if (d < (unsigned'(tile_req_elems) << AccElemLog2Bytes)) begin
         tile_row_write_word[d*8 +: 8] =
             tile_ctx_q.packed_data[(row_start_byte+d)*8 +: 8];
       end
-      if ((d >= col_start_byte) && (d < col_start_byte + unsigned'(tile_elem_bytes))) begin
+      if ((d >= col_start_byte) && (d < col_start_byte + AccElemBytes)) begin
         tile_col_write_word[d*8 +: 8] =
             tile_ctx_q.packed_data[(packed_row_byte+d-col_start_byte)*8 +: 8];
       end
@@ -542,7 +539,7 @@ module spatz_doublebw_vlsu
     head_tile_elems = (active_dim < TileEdge) ? tile_count_t'(active_dim) : tile_count_t'(TileEdge);
   end
   assign tile_tss_req.elems = head_tile_elems;
-  assign head_tile_bytes = tile_byte_cnt_t'(head_tile_elems) << TileTew;
+  assign head_tile_bytes = tile_byte_cnt_t'(head_tile_elems) << AccElemLog2Bytes;
 
   /*------------------------------------------------------------*/
   /*           Tile Accumulator and TCDM Transfer FSM           */
@@ -559,7 +556,6 @@ module spatz_doublebw_vlsu
     tile_w_req_o.row = tile_ctx_q.is_col ? tile_ctx_q.row_idx : tile_ctx_q.access.row;
     tile_w_req_o.col = tile_req_col;
     tile_w_req_o.elems = tile_req_elems;
-    tile_w_req_o.tew = tile_ctx_q.access.tew;
     tile_w_req_o.data = tile_ctx_q.is_col ? tile_col_write_word : tile_row_write_word;
 
     tile_rvalid_o    = 1'b0;
@@ -567,7 +563,6 @@ module spatz_doublebw_vlsu
     tile_r_req_o.row = tile_ctx_q.is_col ? tile_ctx_q.row_idx : tile_ctx_q.access.row;
     tile_r_req_o.col = tile_req_col;
     tile_r_req_o.elems = tile_req_elems;
-    tile_r_req_o.tew = tile_ctx_q.access.tew;
 
     tile_load_rsp_valid = 1'b0;
 
@@ -638,11 +633,11 @@ module spatz_doublebw_vlsu
             int unsigned packed_start_byte;
             int unsigned source_start_byte;
             local_col = tile_count_t'(tile_ctx_q.access.row - tile_req_col);
-            packed_start_byte = unsigned'(tile_ctx_q.row_idx) << TileTew;
-            source_start_byte = unsigned'(local_col) << TileTew;
+            packed_start_byte = unsigned'(tile_ctx_q.row_idx) << AccElemLog2Bytes;
+            source_start_byte = unsigned'(local_col) << AccElemLog2Bytes;
             for (int unsigned d = 0; d < TileRowBytes; d++) begin
               if ((d >= packed_start_byte) &&
-                  (d < packed_start_byte + unsigned'(tile_elem_bytes))) begin
+                  (d < packed_start_byte + AccElemBytes)) begin
                 tile_ctx_d.packed_data[d*8 +: 8] =
                     tile_rdata_i[(source_start_byte+d-packed_start_byte)*8 +: 8];
               end
@@ -656,10 +651,10 @@ module spatz_doublebw_vlsu
             for (int unsigned d = 0; d < TileRowBytes; d++) begin
               int unsigned first_byte;
               int unsigned source_byte;
-              first_byte = unsigned'(tile_req_col) << TileTew;
+              first_byte = unsigned'(tile_req_col) << AccElemLog2Bytes;
               source_byte = d - first_byte;
               if ((d >= first_byte) &&
-                  (source_byte < (unsigned'(tile_req_elems) << TileTew))) begin
+                  (source_byte < (unsigned'(tile_req_elems) << AccElemLog2Bytes))) begin
                 tile_ctx_d.packed_data[d*8 +: 8] = tile_rdata_i[source_byte*8 +: 8];
               end
             end
@@ -1526,7 +1521,7 @@ module spatz_doublebw_vlsu
 
   always_ff @(posedge clk_i) begin : check_tile_tew
     if (rst_ni && tile_req_accept)
-      assert (mem_spatz_req.op_ope.tew == vew_e'(TileTew))
+      assert (mem_spatz_req.op_ope.tew == vew_e'(AccElemLog2Bytes))
         else $error("Tile access with TEW different from the accumulator element width");
   end
 

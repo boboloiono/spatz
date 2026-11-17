@@ -1,0 +1,27 @@
+package:
+  name: vme
+  authors:
+    - "Pei-Yu Lin, ETH Zürich"
+
+dependencies:
+  common_cells: { git: "https://github.com/pulp-platform/common_cells.git", version: =1.28.0 }
+  FPnew:        { git: "https://github.com/pulp-platform/cvfpu.git", rev: pulp-v0.1.3 }
+
+sources:
+  - src/vme_pkg.sv
+  - src/tile_scoreboard.sv
+  - src/mac_scheduler.sv
+  - src/accumulator_tile.sv
+  - src/mover.sv
+  - src/tile_lsu.sv
+  - src/compute_array.sv
+  - src/ope/ope_fma.sv
+  - src/ope/ope_sdotp_legacy.sv
+  - src/ope/ope_sdotp_multi_modules.sv
+  - src/ope/ope_sdotp_multi.sv
+  - src/ope/ope_sdotp.sv
+  - src/vme.sv
+  - target: vme_test
+    files:
+      - test/tb_vme.sv
+      - test/tb_vme_scoreboard.sv

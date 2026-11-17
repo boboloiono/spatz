@@ -2,10 +2,10 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE_HW for details.
 // SPDX-License-Identifier: SHL-0.51
 //
-// Author: Danilo Cammarata <dcammarata@iis.ee.ethz.ch>
-// Author: Gianna Paulin <pauling@iis.ee.ethz.ch>
-// Author: Luca Bertaccini <lbertaccini@iis.ee.ethz.ch>
-// Author: Stefan Mach <smach@iis.ee.ethz.ch>
+// Author: Danilo Cammarata, ETH Zürich
+// Author: Gianna Paulin, ETH Zürich
+// Author: Luca Bertaccini, ETH Zürich
+// Author: Stefan Mach, ETH Zürich
 
 // This unit can be used to compute the following operations:
 // - EXSDOTP: expanding dot product with accumulation
@@ -33,7 +33,7 @@
 
 `include "common_cells/registers.svh"
 
-module opope_sdotp #(
+module ope_sdotp #(
   // One-hot config string: | FP32 | FP64 | FP16 | FP8 | FP16ALT | FP8ALT |
   parameter fpnew_pkg::fmt_logic_t   SrcDotpFpFmtConfig = '1, // FP32 and wider formats are not allowed
                                                               // Supported source formats (FP8, FP8ALT, FP16, FP16ALT)
@@ -83,7 +83,7 @@ module opope_sdotp #(
           || PipeConfig == fpnew_pkg::INSIDE || PipeConfig == fpnew_pkg::DISTRIBUTED);
 
   if (USE_OPTIMIZED) begin : gen_optimized
-    opope_sdotp_multi #(
+    ope_sdotp_multi #(
       .SrcDotpFpFmtConfig(SrcDotpFpFmtConfig),
       .DstDotpFpFmtConfig(DstDotpFpFmtConfig),
       .NumPipeRegs(NumPipeRegs),
@@ -102,7 +102,7 @@ module opope_sdotp #(
       .out_valid_o(), .out_ready_i(1'b1), .busy_o()
     );
   end else begin : gen_legacy
-    opope_sdotp_legacy #(
+    ope_sdotp_legacy #(
       .SrcDotpFpFmtConfig(SrcDotpFpFmtConfig),
       .DstDotpFpFmtConfig(DstDotpFpFmtConfig),
       .NumPipeRegs(NumPipeRegs), .PipeConfig(PipeConfig),

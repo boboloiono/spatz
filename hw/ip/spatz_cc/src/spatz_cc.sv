@@ -479,6 +479,10 @@ module spatz_cc
   // Tracer
   // --------------------------
   // pragma translate_off
+  // Full instruction tracing is deliberately opt-in: writing one formatted
+  // record per retired instruction dominates long application RTL runs.
+  // Enable it only for focused debug builds with -DSPATZ_TRACE.
+`ifdef SPATZ_TRACE
   int           f;
   string        fn;
   logic  [63:0] cycle;
@@ -580,6 +584,7 @@ module spatz_cc
   final begin
     $fclose(f);
   end
+`endif
   // verilog_lint: waive-stop always-ff-non-blocking
   // pragma translate_on
 

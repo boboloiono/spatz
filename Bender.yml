@@ -124,6 +124,9 @@ sources:
     - hw/ip/spatz/src/reorder_buffer.sv
     - hw/ip/spatz/src/rvv_pkg.sv
     - hw/ip/spatz/src/vtl_pkg.sv
+    - target: ope
+      files:
+        - hw/ip/vme/src/vme_pkg.sv
     # Level 1
     - hw/ip/spatz/src/generated/spatz_pkg.sv
     - hw/ip/spatz/src/spatz_serdiv.sv
@@ -145,12 +148,17 @@ sources:
             - hw/ip/ventaglio/ventaglio_gather.sv
     - target: ope
       files:
-        - hw/ip/spatz/src/ope/opope_accumulator.sv
-        - hw/ip/spatz/src/ope/opope_fma.sv
-        - hw/ip/spatz/src/ope/opope_sdotp.sv
-        - hw/ip/spatz/src/ope/opope_sdotp_legacy.sv
-        - hw/ip/spatz/src/ope/opope_sdotp_multi_modules.sv
-        - hw/ip/spatz/src/ope/opope_sdotp_multi.sv
+        - hw/ip/vme/src/accumulator_tile.sv
+        - hw/ip/vme/src/tile_scoreboard.sv
+        - hw/ip/vme/src/mac_scheduler.sv
+        - hw/ip/vme/src/mover.sv
+        - hw/ip/vme/src/tile_lsu.sv
+        - hw/ip/vme/src/compute_array.sv
+        - hw/ip/vme/src/ope/ope_fma.sv
+        - hw/ip/vme/src/ope/ope_sdotp_legacy.sv
+        - hw/ip/vme/src/ope/ope_sdotp_multi_modules.sv
+        - hw/ip/vme/src/ope/ope_sdotp_multi.sv
+        - hw/ip/vme/src/ope/ope_sdotp.sv
     # Level 3
     - hw/ip/spatz/src/spatz_fpu_sequencer.sv
     - hw/ip/spatz/src/spatz_ipu.sv
@@ -164,6 +172,7 @@ sources:
         - hw/ip/ventaglio/ventaglio.sv
     - target: ope
       files:
+        - hw/ip/vme/src/vme.sv
         - hw/ip/spatz/src/ope/spatz_ope.sv
     # Level 4
     - hw/ip/spatz/src/spatz_controller.sv

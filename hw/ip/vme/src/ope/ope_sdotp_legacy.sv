@@ -11,9 +11,9 @@
 //
 // SPDX-License-Identifier: SHL-0.51
 
-// Authors: Luca Bertaccini <lbertaccini@iis.ee.ethz.ch>
-//          Stefan Mach <smach@iis.ee.ethz.ch>
-//          Gianna Paulin <pauling@iis.ee.ethz.ch>
+// Author: Luca Bertaccini, ETH Zürich
+// Author: Stefan Mach, ETH Zürich
+// Author: Gianna Paulin, ETH Zürich
 
 // This unit can be used to compute the following operations:
 // - EXSDOTP: expanding dot product with accumulation
@@ -41,7 +41,7 @@
 
 `include "common_cells/registers.svh"
 
-module opope_sdotp_legacy #(
+module ope_sdotp_legacy #(
   // One-hot config string: | FP32 | FP64 | FP16 | FP8 | FP16ALT | FP8ALT |
   parameter fpnew_pkg::fmt_logic_t   SrcDotpFpFmtConfig = '1, // FP32 and wider formats are not allowed
                                                               // Supported source formats (FP8, FP8ALT, FP16, FP16ALT)

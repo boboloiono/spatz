@@ -33,6 +33,7 @@
         "spatz_fpu": true,
         "spatz_nports": 8,
         "double_bw": 1,
+        "divsqrt_is_shared": 0,
         "buf_fpu": 1,
         // Timing parameters
         "timing": {
@@ -65,10 +66,23 @@
                 "num_spatz_outstanding_loads": 4,
                 "num_dtlb_entries": 1,
                 "num_itlb_entries": 1
+            },
+
+            // Compute core
+            {
+                "isa": "rv32imafd",
+                "xf16": true,
+                "xf8": true,
+                "xfdotp": true,
+                "xdma": false,
+                "num_int_outstanding_loads": 1,
+                "num_int_outstanding_mem": 4,
+                "num_spatz_outstanding_loads": 4,
+                "num_dtlb_entries": 1,
+                "num_itlb_entries": 1
             }
         ],
         "icache": {
-            "use_instruction_buffer": false,
             "size": 4, // total instruction cache size in kByte
             "ways": 2, // number of ways
             "cacheline": 256 // word size in bits

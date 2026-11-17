@@ -2,12 +2,12 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 //
-// Danilo Cammarata <dcammarata@iis.ee.ethz.ch>
-// Pei-Yu Lin       <peilin@ethz.ch>
+// Author: Danilo Cammarata, ETH Zürich
+// Author: Pei-Yu Lin, ETH Zürich
 
 `include "common_cells/registers.svh"
 
-module opope_fma #(
+module ope_fma #(
   parameter fpnew_pkg::fp_format_e   FpFormat    = fpnew_pkg::fp_format_e'(0),
   parameter int unsigned             NumPipeRegs = 0,
   parameter fpnew_pkg::pipe_config_t PipeConfig  = fpnew_pkg::BEFORE,
@@ -586,4 +586,4 @@ module opope_fma #(
   end
   // Output stage: assign module outputs
   assign result_o        = out_pipe_result_q[NUM_OUT_REGS];
-endmodule: opope_fma
+endmodule: ope_fma

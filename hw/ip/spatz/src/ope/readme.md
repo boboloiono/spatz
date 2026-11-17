@@ -71,7 +71,7 @@ Internal request selection prioritizes Clean, VT, TV, then MAC; active datapaths
 | --- | --- | --- |
 | `TE = TileEdge` | 16 | Maximum logical tile edge in the current configuration |
 | `CE = OPEComputeEdge` | 8 | Outer-product compute edge per beat |
-| `EnableTEW16` | 0 | Elaborate the same-format FP16 FMA datapath when set |
+| `EnableFMA16` | 0 | Elaborate the same-format FP16 FMA datapath when set |
 | `AccElemWidth` | 32 bits | Fixed physical accumulator word width |
 | `VRFWordWidth` | 256 bits | Width of each VRF read/write port |
 | `NumPipeRegs` | 4 | Arithmetic pipeline register stages |
@@ -80,7 +80,7 @@ Internal request selection prioritizes Clean, VT, TV, then MAC; active datapaths
 | `TileDataWidth` | 512 bits | OPE/VLSU tile-row data width |
 
 Each CE x CE lane always has an FP32 FMA and two mixed-format SDOTP wrappers for standard FP16 and FP16ALT.
-The same-format FP16 FMA is generated only when `EnableTEW16=1`; it is absent by default.
+The same-format FP16 FMA is generated only when `EnableFMA16=1`; it is absent by default.
 Runtime SEW, TEW and ALT-format state select exactly one result path for an operation.
 Physical storage is `CE * CE * AccDepth * AccElemWidth / 8`, currently 4096 bytes.
 TEW8 is supported for byte storage, moves and clearing only. No FP8 MAC is enabled.
@@ -128,7 +128,7 @@ The element width is `TEW = SEW * multiplier`, not SEW times the raw encoded fie
 | SEW / TEW | Current behavior |
 | --- | --- |
 | 8 / 8 | Raw-byte tile load/store, TV/VT and VTZERO; no FP8 MAC |
-| 16 / 16 | Same-format FP16 FMA when `EnableTEW16=1`; unsupported by the default OPE instance |
+| 16 / 16 | Same-format FP16 FMA when `EnableFMA16=1`; unsupported by the default OPE instance |
 | 16 / 32 | FP16 or FP16ALT source and FP32 destination through the corresponding SDOTP wrapper |
 | 32 / 32 | Native FP32 inputs and accumulation |
 
@@ -164,8 +164,11 @@ The controller currently rejects SEW8 MAC and SEW8 widening rather than issuing 
 TSS selects the tile, row/column direction and index. VT reads the accumulator, selects the TEW-dependent byte slice,
 and packs it into the VRF write word with byte enables. The controller requires TEW==SEW.
 
-The active extent considers tm/tn, VL, vstart and register-group capacity. The word counter can cross physical vector registers
-and valid tile lines; a move is not restricted to one physical VRF word.
+One instruction selects exactly one TSS row or column and moves at most `TE` elements (`TE * TEW` bits).
+VL and vstart mask that selected line. The vector endpoint is an LMUL register group: when the selected line
+exceeds one VLEN, its consecutive words cross into the following physical registers in that group. LMUL never
+extends the operation into another tile line. The encoded base must be divisible by LMUL and the full group must
+fit in the architectural VRF; for example, LMUL=2 permits `v0:v1` but not `v1:v2`.
 VT completes after the last destination word is accepted, or immediately for an empty operation.
 If the latest source value is resident in the FMA pipeline, it must drain before accumulator access.
 An earlier MAC response alone does not prove the storage already contains the latest value.
@@ -366,11 +369,11 @@ previously needed around each packed load.
 
 The controller continues to install the current architectural VTYPE when an
 LSU request is dispatched; the decoder's memory EEW survives separately in
-`op_mem.ew`. For VTFMM, the scoreboard still records the architectural
-implicit row-stride vector-register reads according to VSEW and TK, even
-though widening SDOTP obtains both packed FP16 lanes from each base vector
-element. `msetmtype` updates matrix VTYPE/mtype and clears VL; `msettn` restores
-TN and VL with the LMUL/ETE limits applied.
+`op_mem.ew`. For VTFMM, same-width FMA records the architectural implicit
+row-stride reads according to VSEW and TK. The supported widening SDOTP path
+instead records only the explicit base group because both FP16 K lanes are
+packed in each 32-bit source element. `msetmtype` updates matrix VTYPE/mtype
+and clears VL; `msettn` restores TN and VL with the LMUL/ETE limits applied.
 
 VTLE/VTSE run in the VLSU, not in the OPE's four request queues.
 VLSU owns TSS interpretation, memory addressing, byte strobes, transactions and completion.
@@ -424,16 +427,16 @@ In particular, MAC response can precede the final accumulator write.
 ### Vector-Register LMUL and TK Tracking
 
 The vector scoreboard separately protects VRF operands. `vreg_group_count` decodes the request's LMUL as one, two, four or
-eight architectural vector registers. Fractional and reserved LMUL encodings conservatively use one register here; legality
-is checked by the configuration path.
+eight architectural vector registers. Memory operands use EMUL, derived from LMUL, EEW and SEW; reserved or out-of-range
+encodings are rejected before issue.
 
-For memory operations, a vector load claims every register in its destination LMUL group in `write_table`, while a vector
-store claims every register in its data-source LMUL group in `read_table`. This prevents a consumer from observing only the
+For memory operations, a vector load claims every register in its destination EMUL group in `write_table`, while a vector
+store claims every register in its data-source EMUL group in `read_table`. This prevents a consumer from observing only the
 first completed register of a grouped load and prevents a younger writer from overwriting any register still needed by a
 grouped store. Index and other independently encoded operands retain their own dependency handling.
 
-For `vtfmm`, both `vs1` and `vs2` are registered as readers across the complete LMUL group for every active K row. The K-row
-base stride is selected from SEW:
+For same-width `vtfmm`, both `vs1` and `vs2` are registered as readers across the complete LMUL group for every active K row.
+The K-row base stride is selected from SEW:
 
 | SEW | K-row register stride |
 | --- | --- |
@@ -444,6 +447,11 @@ base stride is selected from SEW:
 For example, FP32 with LMUL=2 and `tk=2` records `{v0,v1,v8,v9}` for a source based at v0 and
 `{v16,v17,v24,v25}` for a source based at v16. Each listed register contributes its outstanding writer dependency and is
 entered in `read_table` for WAR protection.
+
+For the supported FP16-to-FP32 widening SDOTP path, each explicit source
+element already packs both active K lanes. The scoreboard therefore protects
+one LMUL group at each encoded base (`vs1` and `vs2`) and does not create a
+false dependency on an implicit `base + row_stride` group.
 
 LMUL expands the VRF footprint protected by the scoreboard; it does not independently add OPE MAC steps. MAC execution is
 controlled by `tm` and `tn`: spatial beat address generation crosses vector-register boundaries naturally.
