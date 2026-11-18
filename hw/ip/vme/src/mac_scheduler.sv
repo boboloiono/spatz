@@ -10,41 +10,40 @@
 module mac_scheduler
   import vme_pkg::*;
 #(
-  parameter int unsigned ComputeEdge = VME_COMPUTE_EDGE,
-  parameter int unsigned TileEdge = VME_TILE_EDGE,
+  parameter int unsigned ComputeEdge  = VME_COMPUTE_EDGE,
+  parameter int unsigned TileEdge     = VME_TILE_EDGE,
+  parameter int unsigned EdgeBeats    = 2,
+  parameter int unsigned SpatialBeats = EdgeBeats * EdgeBeats,
   parameter int unsigned AccWordWidth = VME_ACC_WORD_WIDTH,
   parameter int unsigned AccWordBytes = AccWordWidth >> 3
 ) (
-  input  logic clk_i,
-  input  logic rst_ni,
+  input  logic                                    clk_i,
+  input  logic                                    rst_ni,
 
-  input  request_t req_i,
-  input  logic     req_valid_i,
-  output logic     req_ready_o,
+  input  request_t                                req_i,
+  input  logic                                    req_valid_i,
+  output logic                                    req_ready_o,
 
-  input  logic [1:0] vrf_rvalid_i,
-  output logic       vrf_read_valid_o,
-  output vrf_addr_t [1:0] vrf_read_addr_o,
+  input  logic       [1:0]                       vrf_rvalid_i,
+  output logic                                    vrf_read_valid_o,
+  output vrf_addr_t [1:0]                        vrf_read_addr_o,
 
-  input  logic commit_ready_i,
-  output logic commit_valid_o,
-  output instruction_id_t commit_id_o,
+  input  logic                                    commit_ready_i,
+  output logic                                    commit_valid_o,
+  output instruction_id_t                         commit_id_o,
 
-  input  logic tile_read_valid_i,
-  input  mt_t  tile_read_idx_i,
-  input  logic [VME_NR_LOGICAL_TILES-1:0]
-               [(TileEdge/ComputeEdge)*(TileEdge/ComputeEdge)-1:0]
-               pipe_tile_busy_i,
-  input  logic pipe_result_valid_i,
-  input  mt_t  pipe_result_tile_i,
-  input  logic [(((TileEdge/ComputeEdge)*(TileEdge/ComputeEdge)) > 1 ?
-                 $clog2((TileEdge/ComputeEdge)*(TileEdge/ComputeEdge)) : 1)-1:0]
-               pipe_result_beat_i,
+  input  logic                                    tile_read_valid_i,
+  input  mt_t                                     tile_read_idx_i,
+  input  logic [VME_NR_LOGICAL_TILES-1:0][SpatialBeats-1:0] pipe_tile_busy_i,
+  input  logic                                    pipe_result_valid_i,
+  input  mt_t                                     pipe_result_tile_i,
+  input  logic [((SpatialBeats > 1) ? $clog2(SpatialBeats) : 1)-1:0]
+         pipe_result_beat_i,
 
-  output logic fire_o,
-  output logic last_beat_o,
-  output logic empty_complete_o,
-  output logic busy_o,
+  output logic                                    fire_o,
+  output logic                                    last_beat_o,
+  output logic                                    empty_complete_o,
+  output logic                                    busy_o,
   output logic [VME_NR_LOGICAL_TILES-1:0] pending_tiles_o,
 
   output instruction_id_t id_o,
@@ -52,26 +51,21 @@ module mac_scheduler
   output vew_e            sew_o,
   output vew_e            tew_o,
   output logic [2:0]      tk_o,
-  output logic [(((TileEdge/ComputeEdge)*(TileEdge/ComputeEdge)) > 1 ?
-                 $clog2((TileEdge/ComputeEdge)*(TileEdge/ComputeEdge)) : 1)-1:0]
+  output logic [((SpatialBeats > 1) ? $clog2(SpatialBeats) : 1)-1:0]
                beat_o,
-  output logic [((TileEdge/ComputeEdge) > 1 ?
-                 $clog2(TileEdge/ComputeEdge) : 1)-1:0] edge_row_o,
-  output logic [((TileEdge/ComputeEdge) > 1 ?
-                 $clog2(TileEdge/ComputeEdge) : 1)-1:0] edge_col_o,
+  output logic [((EdgeBeats > 1) ? $clog2(EdgeBeats) : 1)-1:0] edge_row_o,
+  output logic [((EdgeBeats > 1) ? $clog2(EdgeBeats) : 1)-1:0] edge_col_o,
   output logic [ComputeEdge-1:0][ComputeEdge-1:0] lane_active_o,
   output logic use_sdotp_o
 );
 
   `include "common_cells/registers.svh"
 
-  localparam int unsigned EdgeBeats = TileEdge / ComputeEdge;
-  localparam int unsigned EdgeBeatW = EdgeBeats > 1 ? $clog2(EdgeBeats) : 1;
-  localparam int unsigned SpatialBeats = EdgeBeats * EdgeBeats;
-  localparam int unsigned SpatialBeatW = SpatialBeats > 1 ? $clog2(SpatialBeats) : 1;
+  localparam int unsigned EdgeBeatW     = EdgeBeats > 1 ? $clog2(EdgeBeats) : 1;
+  localparam int unsigned SpatialBeatW  = SpatialBeats > 1 ? $clog2(SpatialBeats) : 1;
   localparam int unsigned ReductionIdxW = VME_K_MAX > 1 ? $clog2(VME_K_MAX) : 1;
 
-  typedef logic [$clog2(EdgeBeats+1)-1:0] edge_beat_count_t;
+  typedef logic [$clog2(EdgeBeats + 1)-1:0] edge_beat_count_t;
   typedef logic [5:0] operand_width_t;
 
   typedef struct packed {
@@ -131,11 +125,11 @@ module mac_scheduler
     vs1_base: vrf_addr_t'(req_i.vs1) * VME_WORDS_PER_VREG,
     vs2_base: vrf_addr_t'(req_i.vs2) * VME_WORDS_PER_VREG,
     sew     : req_i.vtype.vsew,
-    tew     : req_i.op_ope.tew,
+    tew     : req_i.op_vme.tew,
     tile    : req_i.mtd,
-    tm      : req_i.op_ope.tm > TileEdge ? tile_count_t'(TileEdge) : req_i.op_ope.tm,
-    tn      : req_i.op_ope.tn > TileEdge ? tile_count_t'(TileEdge) : req_i.op_ope.tn,
-    tk      : req_i.op_ope.tk
+    tm      : req_i.op_vme.tm > TileEdge ? tile_count_t'(TileEdge) : req_i.op_vme.tm,
+    tn      : req_i.op_vme.tn > TileEdge ? tile_count_t'(TileEdge) : req_i.op_vme.tn,
+    tk      : req_i.op_vme.tk
   };
 
   assign edge_row = EdgeBeatW'(beat_q / EdgeBeats);

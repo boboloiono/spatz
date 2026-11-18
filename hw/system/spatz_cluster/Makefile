@@ -37,8 +37,8 @@ BUF_FPU := $(shell python3 -c "import jstyleson; print(jstyleson.load(open('$(SP
 # hjson (a Spatz/cluster-level extension), define VENTAGLIO so the RTL `ifdef
 # VENTAGLIO ... `endif blocks pull in the VTL integration.
 SPATZ_CLUSTER_VENTAGLIO := $(shell python3 -c "import jstyleson; f = open('$(SPATZ_CLUSTER_CFG_PATH)'); print(1 if jstyleson.load(f)['cluster'].get('ventaglio', False) else 0)")
-# OPE sources are enabled by default; the cluster configuration can override it.
-SPATZ_CLUSTER_OPE := $(shell python3 -c "import jstyleson; f = open('$(SPATZ_CLUSTER_CFG_PATH)'); print(1 if jstyleson.load(f)['cluster'].get('ope', True) else 0)")
+# VME sources are enabled by default; the cluster configuration can override it.
+SPATZ_CLUSTER_VME := $(shell python3 -c "import jstyleson; f = open('$(SPATZ_CLUSTER_CFG_PATH)'); print(1 if jstyleson.load(f)['cluster'].get('vme', True) else 0)")
 
 ifeq ($(DOUBLE_BW),1)
 	DEFS += -DDOUBLE_BW
@@ -55,9 +55,8 @@ ifeq ($(SPATZ_CLUSTER_VENTAGLIO),1)
 	SPATZ_CLUSTER_CFG_DEFINES += -DSPATZ_CLUSTER_VENTAGLIO=1
 endif
 
-ifeq ($(SPATZ_CLUSTER_OPE),1)
-	DEFS += -DOPE
-	BENDER_CFG_TARGETS += -t ope
+ifeq ($(SPATZ_CLUSTER_VME),1)
+	BENDER_CFG_TARGETS += -t vme
 endif
 
 # Include Makefrag
@@ -131,24 +130,24 @@ src/generated/spatz_cluster_wrapper.sv: ${SPATZ_CLUSTER_CFG_PATH} $(find src/tpl
 ## Generate data for all spatz benchmarks
 .PHONY: spatz.gendata
 spatz.gendata:
-	@for benchmark_dir in $(ROOT)/sw/spatzBenchmarks/*/; do \
-		script_dir="$$benchmark_dir/script"; \
-		data_dir="$$benchmark_dir/data"; \
-		if [ -d "$$script_dir" ]; then \
-			json_count=$$(find "$$script_dir" -name '*.json' -type f | wc -l); \
-			if [ "$$json_count" -gt 0 ]; then \
-				echo "Generating data for benchmark $$benchmark_dir ($$json_count json configs)"; \
-				for config in "$$script_dir"/*.json; do \
-					if [ -f "$$config" ]; then \
-						config_path="script/$$(basename $$config)"; \
-						(cd "$$benchmark_dir" && ${PYTHON} script/gen_data.py -c "$$config_path") || true; \
-					fi \
-				done \
-			else \
-				echo "No json data configs for benchmark $$benchmark_dir"; \
-			fi \
-		fi \
-	done
+# 	@for benchmark_dir in $(ROOT)/sw/spatzBenchmarks/*/; do \
+# 		script_dir="$$benchmark_dir/script"; \
+# 		data_dir="$$benchmark_dir/data"; \
+# 		if [ -d "$$script_dir" ]; then \
+# 			json_count=$$(find "$$script_dir" -name '*.json' -type f | wc -l); \
+# 			if [ "$$json_count" -gt 0 ]; then \
+# 				echo "Generating data for benchmark $$benchmark_dir ($$json_count json configs)"; \
+# 				for config in "$$script_dir"/*.json; do \
+# 					if [ -f "$$config" ]; then \
+# 						config_path="script/$$(basename $$config)"; \
+# 						(cd "$$benchmark_dir" && ${PYTHON} script/gen_data.py -c "$$config_path") || true; \
+# 					fi \
+# 				done \
+# 			else \
+# 				echo "No json data configs for benchmark $$benchmark_dir"; \
+# 			fi \
+# 		fi \
+# 	done
 
 .PHONY: spatz.cleandata
 spatz.cleandata:

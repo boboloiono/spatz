@@ -10,14 +10,13 @@
 module mover
   import vme_pkg::*;
 #(
-  parameter int unsigned TileEdge = VME_TILE_EDGE,
-  parameter int unsigned AccWordWidth = VME_ACC_WORD_WIDTH,
-  parameter int unsigned AccWordBytes = AccWordWidth >> 3,
+  parameter int unsigned TileEdge          = VME_TILE_EDGE,
+  parameter int unsigned AccWordWidth      = VME_ACC_WORD_WIDTH,
+  parameter int unsigned AccWordBytes      = AccWordWidth >> 3,
   parameter int unsigned MaxVregGroupWords = VME_MAX_VREG_GROUP_WORDS
-)
-(
-  input  logic clk_i,
-  input  logic rst_ni,
+) (
+  input  logic                                    clk_i,
+  input  logic                                    rst_ni,
 
   input  request_t vt_req_i,
   input  logic     vt_accept_i,
@@ -66,19 +65,19 @@ module mover
     int unsigned vt_tew_bytes, tv_tew_bytes;
     int unsigned vt_elems_per_word, tv_elems_per_word;
 
-    vt_tew_bytes = 1 << int'(vt_req_i.op_ope.tew);
-    tv_tew_bytes = 1 << int'(tv_req_i.op_ope.tew);
+    vt_tew_bytes = 1 << int'(vt_req_i.op_vme.tew);
+    tv_tew_bytes = 1 << int'(tv_req_i.op_vme.tew);
     vt_elems_per_word = VME_VRF_WORD_BYTES / vt_tew_bytes;
     tv_elems_per_word = VME_VRF_WORD_BYTES / tv_tew_bytes;
 
     vt_shape_d = '0;
     vt_shape_d.line_elems =
-        (vt_req_i.op_ope.tss.is_row ? vt_req_i.op_ope.tn : vt_req_i.op_ope.tm) > TileEdge ?
+        (vt_req_i.op_vme.tss.is_row ? vt_req_i.op_vme.tn : vt_req_i.op_vme.tm) > TileEdge ?
         tile_count_t'(TileEdge) :
-        tile_count_t'(vt_req_i.op_ope.tss.is_row ? vt_req_i.op_ope.tn : vt_req_i.op_ope.tm);
-    vt_line_valid = vt_req_i.op_ope.tss.is_row ?
-                    (vt_req_i.op_ope.tm > vt_req_i.op_ope.tss.index) :
-                    (vt_req_i.op_ope.tn > vt_req_i.op_ope.tss.index);
+        tile_count_t'(vt_req_i.op_vme.tss.is_row ? vt_req_i.op_vme.tn : vt_req_i.op_vme.tm);
+    vt_line_valid = vt_req_i.op_vme.tss.is_row ?
+                    (vt_req_i.op_vme.tm > vt_req_i.op_vme.tss.index) :
+                    (vt_req_i.op_vme.tn > vt_req_i.op_vme.tss.index);
     if (vt_line_valid && (vt_shape_d.line_elems != 0) && (vt_req_i.vl != 0)) begin
       vt_shape_d.elems = (vt_req_i.vl < vt_shape_d.line_elems) ?
                          vt_req_i.vl : vlen_t'(vt_shape_d.line_elems);
@@ -88,12 +87,12 @@ module mover
 
     tv_shape_d = '0;
     tv_shape_d.line_elems =
-        (tv_req_i.op_ope.tss.is_row ? tv_req_i.op_ope.tn : tv_req_i.op_ope.tm) > TileEdge ?
+        (tv_req_i.op_vme.tss.is_row ? tv_req_i.op_vme.tn : tv_req_i.op_vme.tm) > TileEdge ?
         tile_count_t'(TileEdge) :
-        tile_count_t'(tv_req_i.op_ope.tss.is_row ? tv_req_i.op_ope.tn : tv_req_i.op_ope.tm);
-    tv_line_valid = tv_req_i.op_ope.tss.is_row ?
-                    (tv_req_i.op_ope.tm > tv_req_i.op_ope.tss.index) :
-                    (tv_req_i.op_ope.tn > tv_req_i.op_ope.tss.index);
+        tile_count_t'(tv_req_i.op_vme.tss.is_row ? tv_req_i.op_vme.tn : tv_req_i.op_vme.tm);
+    tv_line_valid = tv_req_i.op_vme.tss.is_row ?
+                    (tv_req_i.op_vme.tm > tv_req_i.op_vme.tss.index) :
+                    (tv_req_i.op_vme.tn > tv_req_i.op_vme.tss.index);
     if (tv_line_valid && (tv_shape_d.line_elems != 0) && (tv_req_i.vl != 0)) begin
       tv_shape_d.elems = (tv_req_i.vl < tv_shape_d.line_elems) ?
                          tv_req_i.vl : vlen_t'(tv_shape_d.line_elems);
@@ -107,7 +106,7 @@ module mover
       (vt_word_fire && (({1'b0, vt_word_idx_q} + 1'b1) >= vt_shape_q.words)));
   assign vt_commit_valid_o = vt_finishing;
 
-  always_comb begin
+  always_comb begin : update_tile_to_vector
     vt_busy_d = vt_busy_q;
     vt_word_idx_d = vt_word_idx_q;
     if (vt_word_fire && !vt_finishing)
@@ -130,7 +129,7 @@ module mover
       (tv_acc_wen_o && (({1'b0, tv_word_idx_q} + 1'b1) >= tv_shape_q.words)));
   assign tv_commit_valid_o = tv_finishing;
 
-  always_comb begin
+  always_comb begin : update_vector_to_tile
     tv_busy_d = tv_busy_q;
     tv_word_idx_d = tv_word_idx_q;
     if (tv_acc_wen_o && !tv_finishing)
@@ -144,7 +143,7 @@ module mover
     end
   end
 
-  always_comb begin
+  always_comb begin : buffer_vector_data
     tv_data_d = tv_data_q;
     tv_data_latched_d = tv_data_latched_q;
     if (!tv_busy_q) begin
@@ -159,7 +158,7 @@ module mover
     end
   end
 
-  always_comb begin
+  always_comb begin : track_vrf_request
     tv_vrf_outstanding_d = tv_vrf_outstanding_q;
     if (!tv_busy_q || tv_vrf_rvalid_i)
       tv_vrf_outstanding_d = 1'b0;

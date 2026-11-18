@@ -25,6 +25,8 @@ package vme_pkg;
   localparam int unsigned VME_NR_VREGS         = 32;
   localparam int unsigned VME_VRF_WORD_WIDTH   = 256;
   localparam int unsigned VME_ACC_WORD_WIDTH   = 32;
+  localparam int unsigned VME_MEM_ADDR_WIDTH   = 32;
+  localparam int unsigned VME_MEM_DATA_WIDTH   = 64;
 
   // -------------------------------------------------------------------------
   // Default microarchitecture configuration
@@ -32,22 +34,22 @@ package vme_pkg;
   // These defaults may be overridden at the VME module boundary because they
   // change only implementation structure or supported datapaths.
   localparam int unsigned VME_COMPUTE_EDGE = 8;
-  localparam int unsigned VME_FPU_PIPE_REGS = 4;
   localparam bit          VME_ENABLE_FMA16 = 1'b0;
   localparam bit          VME_ENABLE_FMA32 = 1'b0;
 
   // -------------------------------------------------------------------------
   // Derived constants: never override independently
   // -------------------------------------------------------------------------
-  localparam int unsigned VME_VRF_WORD_BYTES     = VME_VRF_WORD_WIDTH >> 3;
-  localparam int unsigned VME_WORDS_PER_VREG     = VME_VLEN / VME_VRF_WORD_WIDTH;
-  localparam int unsigned VME_NR_VRF_WORDS       = VME_NR_VREGS * VME_WORDS_PER_VREG;
-  localparam int unsigned VME_ACC_WORD_BYTES     = VME_ACC_WORD_WIDTH >> 3;
+  localparam int unsigned VME_VRF_WORD_BYTES       = VME_VRF_WORD_WIDTH >> 3;
+  localparam int unsigned VME_WORDS_PER_VREG       = VME_VLEN / VME_VRF_WORD_WIDTH;
+  localparam int unsigned VME_NR_VRF_WORDS         = VME_NR_VREGS * VME_WORDS_PER_VREG;
+  localparam int unsigned VME_ACC_WORD_BYTES       = VME_ACC_WORD_WIDTH >> 3;
   localparam int unsigned VME_MAX_VREG_GROUP_WORDS = VME_WORDS_PER_VREG << 3;
-  localparam int unsigned VME_ACC_TILE_BYTES  = VME_TILE_EDGE * VME_TILE_EDGE * VME_ACC_WORD_BYTES;
-  localparam int unsigned VME_TILE_WORD_BYTES = VME_TILE_EDGE * VME_ACC_WORD_BYTES;
+  localparam int unsigned VME_ACC_TILE_BYTES       =
+      VME_TILE_EDGE * VME_TILE_EDGE * VME_ACC_WORD_BYTES;
+  localparam int unsigned VME_TILE_WORD_BYTES      = VME_TILE_EDGE * VME_ACC_WORD_BYTES;
 
-  typedef logic [$clog2(VME_MAX_VREG_GROUP_WORDS+1)-1:0] move_word_count_t;
+  typedef logic [$clog2(VME_MAX_VREG_GROUP_WORDS + 1)-1:0] move_word_count_t;
 
   typedef enum logic [2:0] {
     EW_8  = 3'b000,
@@ -62,13 +64,27 @@ package vme_pkg;
   typedef logic [$clog2(VME_NR_VRF_WORDS)-1:0] vrf_addr_t;
   typedef logic [VME_VRF_WORD_WIDTH-1:0] vrf_data_t;
   typedef logic [VME_VRF_WORD_BYTES-1:0] vrf_be_t;
-  typedef logic [$clog2(VME_VLEN+1)-1:0] vlen_t;
+  typedef logic [$clog2(VME_VLEN + 1)-1:0] vlen_t;
   // Tile Registers
   typedef logic [$clog2(VME_NR_LOGICAL_TILES)-1:0] mt_t;
   typedef logic [$clog2(VME_TILE_EDGE)-1:0] tile_dim_t;
-  typedef logic [$clog2(VME_TILE_EDGE+1)-1:0] tile_count_t;
+  typedef logic [$clog2(VME_TILE_EDGE + 1)-1:0] tile_count_t;
   typedef logic [$clog2(VME_TILE_WORD_BYTES)-1:0] tile_word_elem_idx_t;
   typedef logic [(VME_TILE_WORD_BYTES << 3)-1:0] tile_word_t;
+  typedef logic [VME_MEM_ADDR_WIDTH-1:0] mem_addr_t;
+  typedef logic [VME_MEM_DATA_WIDTH-1:0] mem_data_t;
+  typedef logic [(VME_MEM_DATA_WIDTH >> 3)-1:0] mem_strb_t;
+
+  typedef struct packed {
+    mem_addr_t addr;
+    logic      write;
+    mem_data_t data;
+    mem_strb_t strb;
+  } tile_mem_req_t;
+
+  typedef struct packed {
+    mem_data_t data;
+  } tile_mem_rsp_t;
 
   typedef struct packed {
     move_word_count_t words;
@@ -77,21 +93,21 @@ package vme_pkg;
   } move_shape_t;
 
   typedef struct packed {
-    logic          tile_valid;
-    mt_t           tile_id;
-    logic          is_row;
-    tile_dim_t     index;
+    logic      tile_valid;
+    mt_t       tile_id;
+    logic      is_row;
+    tile_dim_t index;
   } tile_slice_t;
 
   typedef struct packed {
-    logic          is_mac;
-    logic          is_zero_tile;
-    logic          is_discard;
-    vew_e          tew;
-    tile_slice_t   tss;
-    tile_count_t   tn;
-    tile_count_t   tm;
-    logic [2:0]    tk;
+    logic        is_mac;
+    logic        is_zero_tile;
+    logic        is_discard;
+    vew_e        tew;
+    tile_slice_t tss;
+    tile_count_t tn;
+    tile_count_t tm;
+    logic [2:0]  tk;
   } operation_t;
 
   typedef struct packed {
@@ -108,10 +124,14 @@ package vme_pkg;
     vreg_t           vd;
     logic            use_vd;
     mt_t             mtd;
-    operation_t      op_ope;
+    operation_t      op_vme;
     vector_type_t    vtype;
     vlen_t           vl;
     vlen_t           vstart;
+    mem_addr_t       scalar_addr;
+    logic            is_tile_mem;
+    logic            tile_mem_load;
+    vew_e            tile_mem_ew;
   } request_t;
 
   typedef struct packed {
@@ -133,20 +153,20 @@ package vme_pkg;
   } issue_entry_t;
 
   typedef struct packed {
-    mt_t          idx;
-    tile_dim_t    row;
-    tile_dim_t    col;
-    tile_count_t  elems;
-    vew_e         tew;
+    mt_t         idx;
+    tile_dim_t   row;
+    tile_dim_t   col;
+    tile_count_t elems;
+    vew_e        tew;
   } tile_read_req_t;
 
   typedef struct packed {
-    mt_t          idx;
-    tile_dim_t    row;
-    tile_dim_t    col;
-    tile_count_t  elems;
-    vew_e         tew;
-    tile_word_t   data;
+    mt_t         idx;
+    tile_dim_t   row;
+    tile_dim_t   col;
+    tile_count_t elems;
+    vew_e        tew;
+    tile_word_t  data;
   } tile_write_req_t;
 
 endpackage

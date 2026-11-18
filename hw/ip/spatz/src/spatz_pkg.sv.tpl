@@ -113,19 +113,19 @@ package spatz_pkg;
   localparam int VFURespAddrWidth  = GPRWidth > $clog2(NrVRFWords) ? GPRWidth : $clog2(NrVRFWords);
 
   // Fixed physical accumulator storage width. The active tile element width
-  // is selected by msetmtype and travels with each request as op_ope.tew.
+  // is selected by msetmtype and travels with each request as op_vme.tew.
   localparam int unsigned AccElemWidth = 32;
   localparam int unsigned AccElemBytes = AccElemWidth / 8;
   // Architecture Matrix Tile State: mt0, mt1, ..., mt15.
   localparam int unsigned NrPhysicalTile = 16;
   // Physical compute-array and architectural tile dimensions.
-  localparam int unsigned OPEComputeEdge = 8;
+  localparam int unsigned VMEComputeEdge = 8;
   localparam int unsigned TileEdge = 16;
   // The controller further limits tk to 32/SEW, or to one for 64-bit accumulation.
   localparam int unsigned KMAX   = (AccElemWidth <= 32) ? (32 / 8) : 1;
   // Maximum storage required for one complete Tile row, in bytes.
   localparam int unsigned TileRowBWidth = TileEdge * AccElemBytes;
-  // Fixed word width of the datapath between VLSU and OPE, in bytes.
+  // Fixed word width of the datapath between VLSU and VME, in bytes.
   localparam int unsigned TileWordBWidth = TileEdge * AccElemBytes;
 
   typedef logic [$clog2(TileEdge)-1:0] tile_dim_t;
@@ -254,8 +254,8 @@ package spatz_pkg;
     SLD,
     // Functional unit
     VFU,
-    // Outer Product Engine
-    OPE
+    // Vector-Matrix Engine
+    VME
   } ex_unit_e;
 
   ///////////////////
@@ -355,7 +355,7 @@ package spatz_pkg;
     elen_t      tn;         // N dimension (output columns)
     elen_t      tm;         // M dimension (output rows)
     elen_t      tk;         // K dimension (reduction depth)
-  } op_ope_t;
+  } op_vme_t;
 
   // Result from decoder
   typedef struct packed {
@@ -397,7 +397,7 @@ package spatz_pkg;
     op_mem_t op_mem;
     op_sld_t op_sld;
     op_vtl_t op_vtl;
-    op_ope_t op_ope;
+    op_vme_t op_vme;
 
     // Spatz config details
     vtype_t vtype;
@@ -496,13 +496,13 @@ package spatz_pkg;
   } vsldu_rsp_t;
 
   ////////////////////
-  //  OPE Response  //
+  //  VME Response  //
   ////////////////////
 
   typedef struct packed {
     // Instruction ID
     spatz_id_t id;
-  } ope_rsp_t;
+  } vme_rsp_t;
 
   //////////////////
   // VRF/SB Ports //

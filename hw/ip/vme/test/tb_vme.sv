@@ -143,8 +143,8 @@ module tb_vme;
       vme_req = '0;
       vme_req.id = id;
       vme_req.mtd = tile;
-      vme_req.op_ope.is_zero_tile = 1'b1;
-      vme_req.op_ope.tew = tew;
+      vme_req.op_vme.is_zero_tile = 1'b1;
+      vme_req.op_vme.tew = tew;
       vme_req_valid = 1'b1;
 
       cycles = 0;

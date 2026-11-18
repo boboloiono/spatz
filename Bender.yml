@@ -124,7 +124,7 @@ sources:
     - hw/ip/spatz/src/reorder_buffer.sv
     - hw/ip/spatz/src/rvv_pkg.sv
     - hw/ip/spatz/src/vtl_pkg.sv
-    - target: ope
+    - target: vme
       files:
         - hw/ip/vme/src/vme_pkg.sv
     # Level 1
@@ -146,7 +146,7 @@ sources:
             - hw/ip/ventaglio/ventaglio_scatter_datapath.sv
             - hw/ip/ventaglio/ventaglio_scatter.sv
             - hw/ip/ventaglio/ventaglio_gather.sv
-    - target: ope
+    - target: vme
       files:
         - hw/ip/vme/src/accumulator_tile.sv
         - hw/ip/vme/src/tile_scoreboard.sv
@@ -170,10 +170,10 @@ sources:
     - target: ventaglio
       files:
         - hw/ip/ventaglio/ventaglio.sv
-    - target: ope
+    - target: vme
       files:
         - hw/ip/vme/src/vme.sv
-        - hw/ip/spatz/src/ope/spatz_ope.sv
+        - hw/ip/spatz/src/spatz_vme.sv
     # Level 4
     - hw/ip/spatz/src/spatz_controller.sv
     # Level 5

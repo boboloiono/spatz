@@ -56,23 +56,25 @@ module spatz_decoder
       opcode = decoder_req_i.instr[6:0];
 
       unique casez (decoder_req_i.instr)
-        // --- Tile load/store (memory ↔ tile accumulators via LSU) ---
+        // --- Tile load/store (memory ↔ tile accumulators via VME Tile LSU) ---
         // vtle8/16/32/64 — load from memory into tile
         riscv_instr::VTLE8,
         riscv_instr::VTLE16,
         riscv_instr::VTLE32,
         riscv_instr::VTLE64: begin
           spatz_req.op                = VTLE;
-          spatz_req.ex_unit           = LSU;
+          spatz_req.ex_unit           = VME;
           spatz_req.rs1               = decoder_req_i.rs1; // base address
           spatz_req.rs2               = decoder_req_i.rs2; // TSS (Tile Subset Specifier)
           // instr[11:7] hardwired 0b00000; tile target identified via rs2 (TSS)
-          spatz_req.op_ope.is_load    = 1'b1;
-          spatz_req.op_ope.is_mem     = 1'b1;
-          spatz_req.op_ope.tss.tile_id   = mt_t'(decoder_req_i.rs2[30:27]);
-          spatz_req.op_ope.tss.index  = tile_dim_t'(decoder_req_i.rs2[23:0]);
-          spatz_req.op_ope.tss.is_row = (decoder_req_i.rs2[26:24] == 3'd0);
-          spatz_req.op_ope.tss.tile_valid  = (decoder_req_i.rs2[30:27] < NrPhysicalTile) && (decoder_req_i.rs2[23:0] < TileEdge);
+          spatz_req.op_vme.is_load    = 1'b1;
+          spatz_req.op_vme.is_mem     = 1'b1;
+          spatz_req.op_vme.tss.tile_id = mt_t'(decoder_req_i.rs2[30:27]);
+          spatz_req.op_vme.tss.index   = tile_dim_t'(decoder_req_i.rs2[23:0]);
+          spatz_req.op_vme.tss.is_row  = (decoder_req_i.rs2[26:24] == 3'd0);
+          spatz_req.op_vme.tss.tile_valid =
+              (decoder_req_i.rs2[30:27] < NrPhysicalTile) &&
+              (decoder_req_i.rs2[23:0] < TileEdge);
           spatz_req.op_mem.is_load    = 1'b1;
           unique case (decoder_req_i.instr[31:29])
             3'h0: spatz_req.op_mem.ew = EW_8;
@@ -89,16 +91,18 @@ module spatz_decoder
         riscv_instr::VTSE32,
         riscv_instr::VTSE64: begin
           spatz_req.op                = VTSE;
-          spatz_req.ex_unit           = LSU;
+          spatz_req.ex_unit           = VME;
           spatz_req.rs1               = decoder_req_i.rs1;
           spatz_req.rs2               = decoder_req_i.rs2; // TSS (Tile Subset Specifier)
           // instr[11:7] hardwired 0b00000; tile source identified via rs2 (TSS)
-          spatz_req.op_ope.is_mem     = 1'b1;
-          spatz_req.op_ope.tss.tile_id   = mt_t'(decoder_req_i.rs2[30:27]);
-          spatz_req.op_ope.tss.index  = tile_dim_t'(decoder_req_i.rs2[23:0]);
+          spatz_req.op_vme.is_mem     = 1'b1;
+          spatz_req.op_vme.tss.tile_id = mt_t'(decoder_req_i.rs2[30:27]);
+          spatz_req.op_vme.tss.index   = tile_dim_t'(decoder_req_i.rs2[23:0]);
           // rs2[26:24]: 0 = one row, 1 = one column.
-          spatz_req.op_ope.tss.is_row = (decoder_req_i.rs2[26:24] == 3'd0);
-          spatz_req.op_ope.tss.tile_valid  = (decoder_req_i.rs2[30:27] < NrPhysicalTile) && (decoder_req_i.rs2[23:0] < TileEdge);
+          spatz_req.op_vme.tss.is_row = (decoder_req_i.rs2[26:24] == 3'd0);
+          spatz_req.op_vme.tss.tile_valid =
+              (decoder_req_i.rs2[30:27] < NrPhysicalTile) &&
+              (decoder_req_i.rs2[23:0] < TileEdge);
           spatz_req.op_mem.is_load    = 1'b0;
           unique case (decoder_req_i.instr[31:29])
             3'h0: spatz_req.op_mem.ew = EW_8;
@@ -2126,7 +2130,7 @@ module spatz_decoder
           spatz_req.op                = VMCFG;
           spatz_req.ex_unit           = CON;
           spatz_req.use_rd            = 1'b0;
-          spatz_req.op_ope.cfg_sel = 2'b00;
+          spatz_req.op_vme.cfg_sel = 2'b00;
           spatz_req.mtype             = mtype_t'(decoder_req_i.rs1);
           // Register form carries altfmt in vtype bit 8; higher bits are reserved.
           spatz_req.vtype             = vtype_t'({1'b0, decoder_req_i.rs2[8:0]});
@@ -2137,7 +2141,7 @@ module spatz_decoder
           spatz_req.op                = VMCFG;
           spatz_req.ex_unit           = CON;
           spatz_req.use_rd            = 1'b0;
-          spatz_req.op_ope.cfg_sel    = 2'b00;
+          spatz_req.op_vme.cfg_sel    = 2'b00;
           spatz_req.mtype             = '0;
           spatz_req.mtype.mtwiden     = decoder_req_i.instr[16:15];
           spatz_req.vtype             = '0;
@@ -2154,15 +2158,15 @@ module spatz_decoder
           spatz_req.rd      = decoder_req_i.rd;
           spatz_req.rs1     = decoder_req_i.rs1;
           unique casez (decoder_req_i.instr)
-            riscv_instr::MSETTN: spatz_req.op_ope.cfg_sel = 2'b01;
-            riscv_instr::MSETTM: spatz_req.op_ope.cfg_sel = 2'b10;
-            riscv_instr::MSETTK: spatz_req.op_ope.cfg_sel = 2'b11;
+            riscv_instr::MSETTN: spatz_req.op_vme.cfg_sel = 2'b01;
+            riscv_instr::MSETTM: spatz_req.op_vme.cfg_sel = 2'b10;
+            riscv_instr::MSETTK: spatz_req.op_vme.cfg_sel = 2'b11;
             default:;
           endcase
         end
 
         // Integer matrix arithmetic is not implemented by this FP16->FP32
-        // OPE.  Reject the reserved Zvt encodings at decode so they trap as
+        // VME.  Reject the reserved Zvt encodings at decode so they trap as
         // illegal instructions instead of reaching a partial datapath.
         riscv_instr::VTMMU_TVV: begin
           illegal_instr = 1'b1;
@@ -2176,7 +2180,7 @@ module spatz_decoder
         // vtfmm.tvv — normal accumulate  C[tile] += A[vs2] * B[vs1]  (vs2=A col/x_input, vs1=B row/w_input)
         riscv_instr::VTFMM_TVV: begin
           spatz_req.op              = VTFMM;
-          spatz_req.ex_unit         = OPE;
+          spatz_req.ex_unit         = VME;
           spatz_req.vs1             = decoder_req_i.instr[19:15];
           spatz_req.use_vs1         = 1'b1;
           spatz_req.vs2             = decoder_req_i.instr[24:20];
@@ -2184,7 +2188,7 @@ module spatz_decoder
           spatz_req.mtd             = mt_t'(decoder_req_i.instr[11:8]);
           spatz_req.rm              = fpu_rnd_mode_i;
           spatz_req.fm              = fpu_fmt_mode_i;
-          spatz_req.op_ope.is_mac   = 1'b1;
+          spatz_req.op_vme.is_mac   = 1'b1;
         end
 
         // Alternate floating-point matrix inputs are not implemented.  Keep
@@ -2198,43 +2202,47 @@ module spatz_decoder
         // vtmv.v.t — tile row → vector register  (rs1 = tile row selector)
         riscv_instr::VTMV_V_T: begin
           spatz_req.op      = VTMV_VT;
-          spatz_req.ex_unit = OPE;
+          spatz_req.ex_unit = VME;
           spatz_req.rs1     = decoder_req_i.rs1; // tile row index (from scalar reg)
           spatz_req.vd      = decoder_req_i.instr[11:7]; // destination vector reg
           spatz_req.use_vd  = 1'b1;
-          spatz_req.op_ope.tss.tile_id   = mt_t'(decoder_req_i.rs1[30:27]);
-          spatz_req.op_ope.tss.index  = tile_dim_t'(decoder_req_i.rs1[23:0]);
-          spatz_req.op_ope.tss.is_row = (decoder_req_i.rs1[26:24] == 3'd0);
-          spatz_req.op_ope.tss.tile_valid  = (decoder_req_i.rs1[30:27] < NrPhysicalTile) && (decoder_req_i.rs1[23:0] < TileEdge);
+          spatz_req.op_vme.tss.tile_id = mt_t'(decoder_req_i.rs1[30:27]);
+          spatz_req.op_vme.tss.index   = tile_dim_t'(decoder_req_i.rs1[23:0]);
+          spatz_req.op_vme.tss.is_row  = (decoder_req_i.rs1[26:24] == 3'd0);
+          spatz_req.op_vme.tss.tile_valid =
+              (decoder_req_i.rs1[30:27] < NrPhysicalTile) &&
+              (decoder_req_i.rs1[23:0] < TileEdge);
         end
 
         // vtmv.t.v — vector register → tile row  (rs1 = tile row selector)
         riscv_instr::VTMV_T_V: begin
           spatz_req.op      = VTMV_TV;
-          spatz_req.ex_unit = OPE;
+          spatz_req.ex_unit = VME;
           spatz_req.rs1     = decoder_req_i.rs1; // tile row index (from scalar reg)
           spatz_req.vs2     = decoder_req_i.instr[24:20]; // source vector reg
           spatz_req.use_vs2 = 1'b1;
-          spatz_req.op_ope.tss.tile_id   = mt_t'(decoder_req_i.rs1[30:27]);
-          spatz_req.op_ope.tss.index  = tile_dim_t'(decoder_req_i.rs1[23:0]);
-          spatz_req.op_ope.tss.is_row = (decoder_req_i.rs1[26:24] == 3'd0);
-          spatz_req.op_ope.tss.tile_valid  = (decoder_req_i.rs1[30:27] < NrPhysicalTile) && (decoder_req_i.rs1[23:0] < TileEdge);
+          spatz_req.op_vme.tss.tile_id = mt_t'(decoder_req_i.rs1[30:27]);
+          spatz_req.op_vme.tss.index   = tile_dim_t'(decoder_req_i.rs1[23:0]);
+          spatz_req.op_vme.tss.is_row  = (decoder_req_i.rs1[26:24] == 3'd0);
+          spatz_req.op_vme.tss.tile_valid =
+              (decoder_req_i.rs1[30:27] < NrPhysicalTile) &&
+              (decoder_req_i.rs1[23:0] < TileEdge);
         end
 
         // --- Tile zero and context discard ---
         // vtzero — zero all accumulators of a tile register
         riscv_instr::VTZERO: begin
-          spatz_req.op_ope.is_zero_tile = 1'b1;
+          spatz_req.op_vme.is_zero_tile = 1'b1;
           spatz_req.op     = VTZERO;
-          spatz_req.ex_unit = OPE;
+          spatz_req.ex_unit = VME;
           spatz_req.mtd    = mt_t'(decoder_req_i.instr[11:8]);
         end
 
         // vtdiscard — invalidate all tile state (no data path needed)
         riscv_instr::VTDISCARD: begin
-          spatz_req.op_ope.is_discard = 1'b1;
+          spatz_req.op_vme.is_discard = 1'b1;
           spatz_req.op                    = VTDISCARD;
-          spatz_req.ex_unit               = OPE;
+          spatz_req.ex_unit               = VME;
         end
         // -------------------------------------------------------
         // end of VME

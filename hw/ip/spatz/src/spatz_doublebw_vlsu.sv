@@ -46,15 +46,6 @@ module spatz_doublebw_vlsu
     output logic           [NrInterfaces-1:0] [1:0] vrf_re_o,
     input  vrf_data_t      [NrInterfaces-1:0] [1:0] vrf_rdata_i,
     input  logic           [NrInterfaces-1:0] [1:0] vrf_rvalid_i,
-    // Interface with the Tile
-    output logic        tile_wvalid_o,
-    output tile_w_req_t tile_w_req_o,
-    input  logic        tile_wready_i,
-
-    output logic        tile_rvalid_o,
-    output tile_r_req_t tile_r_req_o,
-    input  tile_word_t  tile_rdata_i,
-    input  logic        tile_rready_i,
     // Memory Request
     output spatz_mem_req_t [NrMemPorts-1:0] spatz_mem_req_o,
     output logic           [NrMemPorts-1:0] spatz_mem_req_valid_o,
@@ -77,6 +68,20 @@ module spatz_doublebw_vlsu
 
   localparam int unsigned MemDataWidth  = ELEN;
   localparam int unsigned MemDataWidthB = ELENB;
+
+  // Legacy tile-transfer logic below is unreachable now that VTLE/VTSE are
+  // decoded directly to VME.  Keep local tie-offs until that datapath is
+  // deleted independently from the mature RVV memory path.
+  logic        tile_wvalid_o;
+  tile_w_req_t tile_w_req_o;
+  logic        tile_wready_i;
+  logic        tile_rvalid_o;
+  tile_r_req_t tile_r_req_o;
+  tile_word_t  tile_rdata_i;
+  logic        tile_rready_i;
+  assign tile_wready_i = 1'b0;
+  assign tile_rdata_i = '0;
+  assign tile_rready_i = 1'b0;
 
   //////////////
   // Typedefs //
@@ -159,8 +164,8 @@ module spatz_doublebw_vlsu
   always_comb begin : proc_req_meta
     logic req_is_indexed, req_is_strided;
     vlen_t split_base;
-    req_is_indexed = !spatz_req_i.op_ope.is_mem && (spatz_req_i.op inside {VLXE, VSXE});
-    req_is_strided = !spatz_req_i.op_ope.is_mem && (spatz_req_i.op inside {VLSE, VSSE});
+    req_is_indexed = !spatz_req_i.op_vme.is_mem && (spatz_req_i.op inside {VLXE, VSXE});
+    req_is_strided = !spatz_req_i.op_vme.is_mem && (spatz_req_i.op inside {VLSE, VSSE});
     req_meta_d.data_ew = req_is_indexed ? spatz_req_i.vtype.vsew : spatz_req_i.op_mem.ew;
     req_meta_d.stride  = req_is_strided ? (spatz_req_i.rs2 >> req_meta_d.data_ew) : 32'd1;
     req_meta_d.idx_shift = ($bits(vew_e)+1)'(MAXEW - req_meta_d.data_ew) + spatz_req_i.op_mem.ew;
@@ -198,7 +203,7 @@ module spatz_doublebw_vlsu
 
   // Tile requests use the tile datapath instead of the VRF datapath.
   logic mem_is_tile_mem;
-  assign mem_is_tile_mem = mem_spatz_req_valid && mem_spatz_req.op_ope.is_mem;
+  assign mem_is_tile_mem = mem_spatz_req_valid && mem_spatz_req.op_vme.is_mem;
 
   // Strided accesses use the scalar stride operand.
   logic mem_is_strided;
@@ -325,10 +330,10 @@ module spatz_doublebw_vlsu
   /*------------------------------------------------------------*/
 
   // Map an architectural tile to its first physical accumulator.
-  assign tile_tss_req.idx = mem_spatz_req.op_ope.tss.tile_id;
-  assign tile_tss_req.row = mem_spatz_req.op_ope.tss.index;
+  assign tile_tss_req.idx = mem_spatz_req.op_vme.tss.tile_id;
+  assign tile_tss_req.row = mem_spatz_req.op_vme.tss.index;
   assign tile_tss_req.col = tile_dim_t'(0);
-  assign tile_tss_req.tew = mem_spatz_req.op_ope.tew;
+  assign tile_tss_req.tew = mem_spatz_req.op_vme.tew;
 
   logic [31:0]            tile_mem_base_aligned;
   logic [MemByteOffW-1:0] tile_mem_head;
@@ -399,14 +404,14 @@ module spatz_doublebw_vlsu
   // Hold a dependent request in the operation queue. In particular, a younger
   // VTSE must not assert tile_rvalid_o and block an older MAC before it retires.
   assign tile_req_accept = mem_spatz_req_valid && mem_is_tile_mem && tile_req_ready &&
-      matrix_enable_i[mem_spatz_req.id] && mem_spatz_req.op_ope.tss.tile_valid;
-  // Store-only accept (register-driven terms only), used for the OPE read
+      matrix_enable_i[mem_spatz_req.id] && mem_spatz_req.op_vme.tss.tile_valid;
+  // Store-only accept (register-driven terms only), used for the VME read
   // request and the completion counter so the load-branch terms do not reach them.
   logic tile_store_accept;
   assign tile_store_accept = mem_spatz_req_valid && mem_is_tile_mem && !mem_spatz_req.op_mem.is_load &&
       (tile_state_q == Tile_Idle) && !tile_store_completion_q[mem_spatz_req.id].valid &&
       !tile_out_pending && !vrf_out_pending &&
-      matrix_enable_i[mem_spatz_req.id] && mem_spatz_req.op_ope.tss.tile_valid;
+      matrix_enable_i[mem_spatz_req.id] && mem_spatz_req.op_vme.tss.tile_valid;
 
   logic [NrMemPorts-1:0] tile_mem_req_valid;
   logic [NrMemPorts-1:0] tile_mem_port_busy;
@@ -535,7 +540,7 @@ module spatz_doublebw_vlsu
   always_comb begin : proc_head_tile_elems
     elen_t active_dim;
 
-    active_dim = mem_spatz_req.op_ope.tss.is_row ? mem_spatz_req.op_ope.tn : mem_spatz_req.op_ope.tm;
+    active_dim = mem_spatz_req.op_vme.tss.is_row ? mem_spatz_req.op_vme.tn : mem_spatz_req.op_vme.tm;
     head_tile_elems = (active_dim < TileEdge) ? tile_count_t'(active_dim) : tile_count_t'(TileEdge);
   end
   assign tile_tss_req.elems = head_tile_elems;
@@ -583,7 +588,7 @@ module spatz_doublebw_vlsu
       Tile_Idle: begin
         logic fast_row_store;
         // A single-word row store reads the accumulator in the accept cycle.
-        fast_row_store = !mem_spatz_req.op_mem.is_load && mem_spatz_req.op_ope.tss.is_row &&
+        fast_row_store = !mem_spatz_req.op_mem.is_load && mem_spatz_req.op_vme.tss.is_row &&
                          (head_tile_bytes <= tile_byte_cnt_t'(TileWordBWidth));
 
         // The context is unused while Idle: load the head request whenever it is a
@@ -596,7 +601,7 @@ module spatz_doublebw_vlsu
           // TSS selects one row or column. Only a column walks physical rows.
           tile_ctx_d.row_idx     = tile_dim_t'(0);
           tile_ctx_d.elems       = head_tile_elems;
-          tile_ctx_d.is_col      = !mem_spatz_req.op_ope.tss.is_row;
+          tile_ctx_d.is_col      = !mem_spatz_req.op_vme.tss.is_row;
           tile_ctx_d.word_col    = tile_dim_t'(0);
           tile_ctx_d.bytes       = tile_byte_cnt_t'(head_tile_bytes);
           tile_ctx_d.chunk_sent  = tile_chunk_idx_t'(0);
@@ -1521,7 +1526,7 @@ module spatz_doublebw_vlsu
 
   always_ff @(posedge clk_i) begin : check_tile_tew
     if (rst_ni && tile_req_accept)
-      assert (mem_spatz_req.op_ope.tew == vew_e'(AccElemLog2Bytes))
+      assert (mem_spatz_req.op_vme.tew == vew_e'(AccElemLog2Bytes))
         else $error("Tile access with TEW different from the accumulator element width");
   end
 
@@ -1532,7 +1537,7 @@ module spatz_doublebw_vlsu
 
   always_ff @(posedge clk_i) begin : check_memory_emul_contract
     if (rst_ni && spatz_req_valid_i && spatz_req_ready_o &&
-        (spatz_req_i.ex_unit == LSU) && !spatz_req_i.op_ope.is_mem) begin
+        (spatz_req_i.ex_unit == LSU) && !spatz_req_i.op_vme.is_mem) begin
       assert ((req_data_emul_regs != 0) &&
               ((spatz_req_i.vd & vreg_t'(req_data_emul_regs - 1'b1)) == '0) &&
               (({1'b0, spatz_req_i.vd} + req_data_emul_regs) <= NRVREG))

@@ -6,7 +6,7 @@ Its datapath contains a distributed `CE×CE` MAC array and a distributed `CE×CE
 arithmetic is collectively referred to as the FPU and contains both FMA and SDOTP datapaths; the accumulator stores their
 results and provides the feedback addend for subsequent operations.
 
-The top-level module is `spatz_ope.sv`; floating-point arithmetic and storage are implemented by the FPU datapaths and
+The Spatz integration module is `spatz_vme.sv`; floating-point arithmetic and storage are implemented by the FPU datapaths and
 `opope_accumulator.sv`.
 Shared request and tile types come from `spatz_pkg` and `rvv_pkg`; floating-point formats come from `fpnew_pkg`.
 

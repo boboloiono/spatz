@@ -9,16 +9,16 @@
 module tile_scoreboard
   import vme_pkg::*;
 (
-  input  logic              clk_i,
-  input  logic              rst_ni,
-  input  request_t          dispatch_req_i,
-  input  logic              dispatch_valid_i,
-  output deps_t            dispatch_deps_o,
-  output dep_generations_t dispatch_generations_o,
-  input  logic [3:0]        complete_valid_i,
-  input  instruction_id_t [3:0]     complete_id_i,
-  output deps_t            outstanding_o,
-  output dep_generations_t generations_o
+  input  logic                  clk_i,
+  input  logic                  rst_ni,
+  input  request_t              dispatch_req_i,
+  input  logic                  dispatch_valid_i,
+  output deps_t                 dispatch_deps_o,
+  output dep_generations_t      dispatch_generations_o,
+  input  logic            [4:0] complete_valid_i,
+  input  instruction_id_t [4:0] complete_id_i,
+  output deps_t                 outstanding_o,
+  output dep_generations_t      generations_o
 );
 
   logic [VME_NR_LOGICAL_TILES-1:0] read_tiles, write_tiles;
@@ -33,16 +33,21 @@ module tile_scoreboard
     read_tiles = '0;
     write_tiles = '0;
 
-    if (dispatch_req_i.op_ope.is_mac) begin
+    if (dispatch_req_i.is_tile_mem) begin
+      if (dispatch_req_i.tile_mem_load)
+        write_tiles[dispatch_req_i.op_vme.tss.tile_id] = 1'b1;
+      else
+        read_tiles[dispatch_req_i.op_vme.tss.tile_id] = 1'b1;
+    end else if (dispatch_req_i.op_vme.is_mac) begin
       read_tiles[dispatch_req_i.mtd] = 1'b1;
       write_tiles[dispatch_req_i.mtd] = 1'b1;
-    end else if (dispatch_req_i.op_ope.tss.tile_valid && dispatch_req_i.use_vd) begin
-      read_tiles[dispatch_req_i.op_ope.tss.tile_id] = 1'b1;
-    end else if (dispatch_req_i.op_ope.tss.tile_valid && dispatch_req_i.use_vs2) begin
-      write_tiles[dispatch_req_i.op_ope.tss.tile_id] = 1'b1;
-    end else if (dispatch_req_i.op_ope.is_zero_tile) begin
+    end else if (dispatch_req_i.op_vme.tss.tile_valid && dispatch_req_i.use_vd) begin
+      read_tiles[dispatch_req_i.op_vme.tss.tile_id] = 1'b1;
+    end else if (dispatch_req_i.op_vme.tss.tile_valid && dispatch_req_i.use_vs2) begin
+      write_tiles[dispatch_req_i.op_vme.tss.tile_id] = 1'b1;
+    end else if (dispatch_req_i.op_vme.is_zero_tile) begin
       write_tiles[dispatch_req_i.mtd] = 1'b1;
-    end else if (dispatch_req_i.op_ope.is_discard) begin
+    end else if (dispatch_req_i.op_vme.is_discard) begin
       write_tiles = '1;
     end
   end
@@ -57,11 +62,11 @@ module tile_scoreboard
       // VTFMM.  Writers from the mover, tile LSU, or clean unit still require
       // an instruction-level dependency.
       if (read_tiles[tile] && writer_valid_q[tile] &&
-          !(dispatch_req_i.op_ope.is_mac && writer_is_mac_q[tile]))
+          !(dispatch_req_i.op_vme.is_mac && writer_is_mac_q[tile]))
         dispatch_deps_o[writer_id_q[tile]] = 1'b1;
       if (write_tiles[tile]) begin
         if (writer_valid_q[tile] &&
-            !(dispatch_req_i.op_ope.is_mac && writer_is_mac_q[tile]))
+            !(dispatch_req_i.op_vme.is_mac && writer_is_mac_q[tile]))
           dispatch_deps_o[writer_id_q[tile]] = 1'b1;
         dispatch_deps_o |= reader_ids_q[tile];
       end
@@ -79,7 +84,7 @@ module tile_scoreboard
     outstanding_d = outstanding_q;
     generations_d = generations_q;
 
-    for (int unsigned port = 0; port < 4; port++) begin
+    for (int unsigned port = 0; port < 5; port++) begin
       if (complete_valid_i[port]) begin
         outstanding_d[complete_id_i[port]] = 1'b0;
         generations_d[complete_id_i[port]] =
@@ -98,11 +103,11 @@ module tile_scoreboard
         // A MAC is an ordered read-modify-write operation.  Its writer entry
         // is sufficient to order later non-MAC consumers; recording it as a
         // reader as well would reintroduce a false MAC-to-MAC dependency.
-        if (read_tiles[tile] && !dispatch_req_i.op_ope.is_mac)
+        if (read_tiles[tile] && !dispatch_req_i.op_vme.is_mac)
           reader_ids_d[tile][dispatch_req_i.id] = 1'b1;
         if (write_tiles[tile]) begin
           writer_valid_d[tile] = 1'b1;
-          writer_is_mac_d[tile] = dispatch_req_i.op_ope.is_mac;
+          writer_is_mac_d[tile] = dispatch_req_i.op_vme.is_mac;
           writer_id_d[tile] = dispatch_req_i.id;
         end
       end

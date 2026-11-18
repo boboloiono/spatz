@@ -7,67 +7,67 @@
 // Vector-Matrix Engine command scheduler and unit integration.
 
 // The accumulator is banked by ComputeEdge x ComputeEdge lanes. A spatial beat
-// selects one compute-array region of a logical tile; a resident result holds the newest
-// pipeline output until it can be forwarded to the next MAC or written back.
+// selects one compute-array region of a logical tile; a resident result holds
+// the newest pipeline output until it can be forwarded or written back.
 
 module vme
   import vme_pkg::*;
   import fpnew_pkg::*;
 #(
-  parameter int unsigned ComputeEdge = VME_COMPUTE_EDGE,
-  parameter int unsigned TileEdge = VME_TILE_EDGE,
-  parameter int unsigned AccWordWidth = VME_ACC_WORD_WIDTH,
-  parameter int unsigned AccWordBytes = AccWordWidth >> 3,
-  parameter int unsigned SpatialBeats = 4,
+  parameter int unsigned ComputeEdge       = VME_COMPUTE_EDGE,
+  parameter int unsigned TileEdge          = VME_TILE_EDGE,
+  parameter int unsigned AccWordWidth      = VME_ACC_WORD_WIDTH,
   parameter int unsigned MaxVregGroupWords = VME_MAX_VREG_GROUP_WORDS,
-  parameter int unsigned NumPipeRegs = VME_FPU_PIPE_REGS,
-  parameter bit EnableFMA16 = VME_ENABLE_FMA16,
-  parameter bit EnableFMA32 = VME_ENABLE_FMA32
+  parameter bit          EnableFMA16       = VME_ENABLE_FMA16,
+  parameter bit          EnableFMA32       = VME_ENABLE_FMA32,
+  parameter int unsigned NrMemPorts        = 8
 ) (
-  input  logic             clk_i              ,
-  input  logic             rst_ni             ,
+  input  logic                                    clk_i,
+  input  logic                                    rst_ni,
 
-  // interface with Controller
-  input  request_t         req_i          ,
-  input  logic             req_valid_i    ,
-  output logic             req_ready_o    ,
-  input  logic [VME_NR_INFLIGHT-1:0] matrix_enable_i,
+  // Interface with the controller.
+  input  request_t                                req_i,
+  input  logic                                    req_valid_i,
+  output logic                                    req_ready_o,
+  input  logic [VME_NR_INFLIGHT-1:0]              matrix_enable_i,
 
-  output logic             rsp_valid_o    ,
-  input  logic             rsp_ready_i    ,
-  output response_t         rsp_o          ,
+  output logic                                    rsp_valid_o,
+  input  logic                                    rsp_ready_i,
+  output response_t                               rsp_o,
 
-  // interface with VRF
-  output vrf_addr_t        vrf_waddr_o        ,
-  output vrf_data_t        vrf_wdata_o        ,
-  output logic             vrf_we_o           ,
-  output vrf_be_t          vrf_wbe_o          ,
-  input  logic             vrf_wvalid_i       ,
+  // Interface with the VRF.
+  output vrf_addr_t                               vrf_waddr_o,
+  output vrf_data_t                               vrf_wdata_o,
+  output logic                                    vrf_we_o,
+  output vrf_be_t                                 vrf_wbe_o,
+  input  logic                                    vrf_wvalid_i,
 
-  output vrf_addr_t  [2:0] vrf_raddr_o        ,
-  output logic       [2:0] vrf_re_o           ,
-  input  logic       [2:0] vrf_rgnt_i         ,
-  input  vrf_data_t  [2:0] vrf_rdata_i        ,
-  input  logic       [2:0] vrf_rvalid_i       ,
-  output instruction_id_t    [3:0] vrf_id_o           ,
+  output vrf_addr_t       [2:0]                  vrf_raddr_o,
+  output logic            [2:0]                  vrf_re_o,
+  input  logic            [2:0]                  vrf_rgnt_i,
+  input  vrf_data_t       [2:0]                  vrf_rdata_i,
+  input  logic            [2:0]                  vrf_rvalid_i,
+  output instruction_id_t [3:0]                  vrf_id_o,
 
-  // interface with VLSU
-  input  logic             tile_wvalid_i      ,
-  input  tile_write_req_t  tile_w_req_i       ,
-  output logic             tile_wready_o      ,
-  input  logic             tile_rvalid_i      ,
-  input  tile_read_req_t  tile_r_req_i       ,
-  output tile_word_t       tile_rdata_o       ,
-  output logic             tile_rready_o
+  output tile_mem_req_t [NrMemPorts-1:0]       tile_mem_req_o,
+  output logic          [NrMemPorts-1:0]       tile_mem_req_valid_o,
+  input  logic          [NrMemPorts-1:0]       tile_mem_req_ready_i,
+  input  tile_mem_rsp_t [NrMemPorts-1:0]       tile_mem_rsp_i,
+  input  logic          [NrMemPorts-1:0]       tile_mem_rsp_valid_i,
+  output logic                                    tile_mem_finished_o,
+  output logic                                    tile_mem_store_finished_o
 );
 
 `include "common_cells/registers.svh"
 
   // MAC latency is owned by the compute array.  This integration layer only
   // tracks architectural tile state and cross-unit dependencies.
-  localparam int unsigned EdgeBeats = TileEdge / ComputeEdge;
-  localparam int unsigned EdgeBeatW = EdgeBeats > 1 ? $clog2(EdgeBeats) : 1;
+  localparam int unsigned EdgeBeats    = TileEdge / ComputeEdge;
+  localparam int unsigned EdgeBeatW    = EdgeBeats > 1 ? $clog2(EdgeBeats) : 1;
+  localparam int unsigned SpatialBeats = EdgeBeats * EdgeBeats;
   localparam int unsigned SpatialBeatW = (SpatialBeats > 1) ? $clog2(SpatialBeats) : 1;
+  localparam int unsigned AccWordBytes = AccWordWidth >> 3;
+  localparam int unsigned NumPipeRegs  = 4;
   /*------------------------------------------------------------*/
   /*                  Shared Types and Signals                  */
   /*------------------------------------------------------------*/
@@ -81,8 +81,8 @@ module vme
   deps_t scoreboard_deps, scoreboard_outstanding;
   dep_generations_t scoreboard_dispatch_generations;
   dep_generations_t scoreboard_generations;
-  logic [3:0] scoreboard_complete_valid;
-  instruction_id_t [3:0] scoreboard_complete_id;
+  logic [4:0] scoreboard_complete_valid;
+  instruction_id_t [4:0] scoreboard_complete_id;
   logic scoreboard_dispatch;
   logic       mac_req_valid ;
   logic       mac_req_ready ;
@@ -95,8 +95,10 @@ module vme
   logic       clean_req_valid ;
   logic       clean_req_ready ;
   logic mac_in_ready, move_in_ready, clean_in_ready;
+  logic tile_in_ready;
   logic mac_queue_valid, move_queue_valid, clean_queue_valid;
-  logic mac_deps_ready, move_deps_ready, clean_deps_ready;
+  logic tile_queue_valid;
+  logic mac_deps_ready, move_deps_ready, clean_deps_ready, tile_deps_ready;
   logic input_is_tile_to_vreg, input_is_vreg_to_tile;
   logic move_is_tile_to_vreg, move_is_vreg_to_tile;
 
@@ -165,16 +167,40 @@ module vme
   logic tile_write_mac_conflict, tile_write_zero_conflict;
   logic tile_write_blocked, tile_read_blocked;
 
+  issue_entry_t tile_entry;
+  request_t tile_req;
+  logic tile_cmd_valid, tile_cmd_ready;
+  response_t tile_cmd_rsp;
+  logic tile_cmd_rsp_valid, tile_cmd_rsp_ready;
+  logic internal_tile_wvalid, internal_tile_wready;
+  tile_write_req_t internal_tile_w_req;
+  logic internal_tile_rvalid, internal_tile_rready;
+  tile_read_req_t internal_tile_r_req;
+  tile_word_t internal_tile_rdata;
+  logic array_tile_wvalid, array_tile_wready;
+  tile_write_req_t array_tile_w_req;
+  logic array_tile_rvalid, array_tile_rready;
+  tile_read_req_t array_tile_r_req;
+  tile_word_t array_tile_rdata;
+
   request_t ingress_req;
   logic ingress_valid, ingress_ready;
+
+  assign array_tile_wvalid = internal_tile_wvalid;
+  assign array_tile_w_req = internal_tile_w_req;
+  assign internal_tile_wready = array_tile_wready;
+  assign array_tile_rvalid = internal_tile_rvalid;
+  assign array_tile_r_req = internal_tile_r_req;
+  assign internal_tile_rready = array_tile_rready;
+  assign internal_tile_rdata = array_tile_rdata;
 
   /*------------------------------------------------------------*/
   /*               Request Queues and Arbitration               */
   /*------------------------------------------------------------*/
 
-  assign input_is_tile_to_vreg = ingress_req.op_ope.tss.tile_valid &&
+  assign input_is_tile_to_vreg = ingress_req.op_vme.tss.tile_valid &&
                                  ingress_req.use_vd;
-  assign input_is_vreg_to_tile = ingress_req.op_ope.tss.tile_valid &&
+  assign input_is_vreg_to_tile = ingress_req.op_vme.tss.tile_valid &&
                                  ingress_req.use_vs2 &&
                                  !ingress_req.use_vd;
 
@@ -186,12 +212,14 @@ module vme
   assign scoreboard_dispatch = ingress_valid && ingress_ready;
 
   assign scoreboard_complete_valid = {
+    tile_cmd_rsp_valid && tile_cmd_rsp_ready,
     clean_req_valid && clean_req_ready,
     tv_commit_valid && tv_commit_ready,
     vt_commit_valid && vt_commit_ready,
     mac_scoreboard_complete
   };
   assign scoreboard_complete_id = {
+    tile_cmd_rsp.id,
     control_req.id,
     tv_req_q.id,
     vt_req_q.id,
@@ -214,9 +242,10 @@ module vme
   assign compute_req = mac_entry.req;
   assign move_req = move_entry.req;
   assign control_req = clean_entry.req;
-  assign move_is_tile_to_vreg = move_req.op_ope.tss.tile_valid &&
+  assign tile_req = tile_entry.req;
+  assign move_is_tile_to_vreg = move_req.op_vme.tss.tile_valid &&
                                 move_req.use_vd;
-  assign move_is_vreg_to_tile = move_req.op_ope.tss.tile_valid &&
+  assign move_is_vreg_to_tile = move_req.op_vme.tss.tile_valid &&
                                 move_req.use_vs2 &&
                                 !move_req.use_vd;
 
@@ -224,6 +253,7 @@ module vme
     mac_deps_ready = 1'b1;
     move_deps_ready = 1'b1;
     clean_deps_ready = 1'b1;
+    tile_deps_ready = 1'b1;
     for (int unsigned id = 0; id < VME_NR_INFLIGHT; id++) begin
       if (mac_entry.deps[id] && scoreboard_outstanding[id] &&
           (mac_entry.dep_generations[id] == scoreboard_generations[id]))
@@ -234,6 +264,9 @@ module vme
       if (clean_entry.deps[id] && scoreboard_outstanding[id] &&
           (clean_entry.dep_generations[id] == scoreboard_generations[id]))
         clean_deps_ready = 1'b0;
+      if (tile_entry.deps[id] && scoreboard_outstanding[id] &&
+          (tile_entry.dep_generations[id] == scoreboard_generations[id]))
+        tile_deps_ready = 1'b0;
     end
   end : dep_generation_check
 
@@ -249,6 +282,8 @@ module vme
                         matrix_enable_i[move_req.id];
   assign clean_req_valid = clean_queue_valid && clean_deps_ready &&
                            matrix_enable_i[control_req.id];
+  assign tile_cmd_valid = tile_queue_valid && tile_deps_ready &&
+                          matrix_enable_i[tile_req.id];
 
   spill_register #(.T(request_t)) i_op_ingress_queue (
     .clk_i,
@@ -272,7 +307,7 @@ module vme
     .testmode_i (1'b0),
     .usage_o    (),
     .data_i     (dispatch_entry),
-    .valid_i    (ingress_valid && ingress_req.op_ope.is_mac),
+    .valid_i    (ingress_valid && ingress_req.op_vme.is_mac),
     .ready_o    (mac_in_ready),
     .data_o     (mac_entry),
     .valid_o    (mac_queue_valid),
@@ -310,12 +345,30 @@ module vme
     .usage_o    (),
     .data_i     (dispatch_entry),
     .valid_i    (ingress_valid &&
-                 (ingress_req.op_ope.is_zero_tile ||
-                  ingress_req.op_ope.is_discard)),
+                 (ingress_req.op_vme.is_zero_tile ||
+                  ingress_req.op_vme.is_discard)),
     .ready_o    (clean_in_ready),
     .data_o     (clean_entry),
     .valid_o    (clean_queue_valid),
     .ready_i    (clean_req_ready)
+  );
+
+  stream_fifo #(
+    .FALL_THROUGH (1'b0),
+    .DEPTH        (2),
+    .T            (issue_entry_t)
+  ) i_tile_memory_operand_queue (
+    .clk_i,
+    .rst_ni,
+    .flush_i    (1'b0),
+    .testmode_i (1'b0),
+    .usage_o    (),
+    .data_i     (dispatch_entry),
+    .valid_i    (ingress_valid && ingress_req.is_tile_mem),
+    .ready_o    (tile_in_ready),
+    .data_o     (tile_entry),
+    .valid_o    (tile_queue_valid),
+    .ready_i    (tile_cmd_valid && tile_cmd_ready)
   );
 
   // Each unit can accept an independent ready operation in the same cycle.
@@ -332,13 +385,15 @@ module vme
 
   always_comb begin : selected_request_ready
     ingress_ready = 1'b0;
-    if (ingress_req.op_ope.is_mac)
+    if (ingress_req.op_vme.is_mac)
       ingress_ready = mac_in_ready;
     else if (input_is_tile_to_vreg || input_is_vreg_to_tile)
       ingress_ready = move_in_ready;
-    else if (ingress_req.op_ope.is_zero_tile ||
-             ingress_req.op_ope.is_discard)
+    else if (ingress_req.op_vme.is_zero_tile ||
+             ingress_req.op_vme.is_discard)
       ingress_ready = clean_in_ready;
+    else if (ingress_req.is_tile_mem)
+      ingress_ready = tile_in_ready;
   end : selected_request_ready
 
   ////////////////////////////////////////////////////////////////////////
@@ -348,6 +403,8 @@ module vme
   mac_scheduler #(
     .ComputeEdge  (ComputeEdge),
     .TileEdge     (TileEdge),
+    .EdgeBeats    (EdgeBeats),
+    .SpatialBeats (SpatialBeats),
     .AccWordWidth (AccWordWidth),
     .AccWordBytes (AccWordBytes)
   ) i_mac_scheduler (
@@ -362,8 +419,8 @@ module vme
     .commit_ready_i         (mac_commit_ready),
     .commit_valid_o         (mac_commit_valid),
     .commit_id_o            (),
-    .tile_read_valid_i      (tile_rvalid_i),
-    .tile_read_idx_i        (tile_r_req_i.idx),
+    .tile_read_valid_i      (array_tile_rvalid),
+    .tile_read_idx_i        (array_tile_r_req.idx),
     .pipe_tile_busy_i       (fpu_pipe_tile_busy),
     .pipe_result_valid_i    (fpu_pipe_result_fire),
     .pipe_result_tile_i     (fpu_result_tile),
@@ -447,15 +504,15 @@ module vme
     // Discard is global state invalidation and therefore takes priority if a
     // malformed request ever asserts both command bits.  It waits for every
     // producer/consumer of accumulator state to become idle.
-    if (control_req.op_ope.is_discard)
+    if (control_req.op_vme.is_discard)
       clean_acc_ready = !mac_scheduler_busy &&
                         !fpu_pipe_busy && !vt_busy_q && !tv_busy_q &&
-                        !tile_rvalid_i && !tile_wvalid_i;
+                        !array_tile_rvalid && !array_tile_wvalid;
     // Zero only touches its selected tile and may proceed while unrelated
     // tiles are active, provided no reader/writer owns that tile.
-    else if (control_req.op_ope.is_zero_tile)
+    else if (control_req.op_vme.is_zero_tile)
       clean_acc_ready = !mac_tile_busy[control_req.mtd]
-                        && !(tile_rvalid_i && (tile_r_req_i.idx == control_req.mtd));
+                        && !(array_tile_rvalid && (array_tile_r_req.idx == control_req.mtd));
   end : clean_acc_ready_proc
 
   /*------------------------------------------------------------*/
@@ -486,7 +543,9 @@ module vme
 
     if (tv_rd_en) begin
       vrf_re_o[2]    = 1'b1;
-      vrf_raddr_o[2] = (vrf_addr_t'(tv_req_q.vs2) << $clog2(VME_WORDS_PER_VREG)) + vrf_addr_t'(tv_rd_idx);
+      vrf_raddr_o[2] =
+          (vrf_addr_t'(tv_req_q.vs2) << $clog2(VME_WORDS_PER_VREG)) +
+          vrf_addr_t'(tv_rd_idx);
     end
   end
 
@@ -503,7 +562,9 @@ module vme
     if (vt_busy_q) begin
       // A flat word offset crosses physical-register boundaries when LMUL>1;
       // the controller has already checked that vd is an aligned group base.
-      vrf_waddr_o =(vrf_addr_t'(vt_req_q.vd) << $clog2(VME_WORDS_PER_VREG)) + vrf_addr_t'(vt_word_idx_q);
+      vrf_waddr_o =
+          (vrf_addr_t'(vt_req_q.vd) << $clog2(VME_WORDS_PER_VREG)) +
+          vrf_addr_t'(vt_word_idx_q);
       vrf_we_o = vt_req_q.use_vd;
     end
   end
@@ -512,28 +573,61 @@ module vme
   /*     Shared Accumulator Access and Tile Slice Selection     */
   /*------------------------------------------------------------*/
 
-  // Compare IDs in parallel with per-tile beat reduction, avoiding a wide beat-vector mux before reduction.
+  // Compare IDs in parallel with per-tile beat reduction, avoiding a wide
+  // beat-vector mux before reduction.
   for (genvar tile = 0; tile < VME_NR_LOGICAL_TILES; tile++) begin : gen_tile_access_conflict
-    assign tile_read_pipe_conflict[tile] = (tile_r_req_i.idx == mt_t'(tile)) && (|fpu_pipe_tile_busy[tile]);
-    assign tile_write_pipe_conflict[tile] = (tile_w_req_i.idx == mt_t'(tile)) && (|fpu_pipe_tile_busy[tile]);
+    assign tile_read_pipe_conflict[tile] =
+        (array_tile_r_req.idx == mt_t'(tile)) && (|fpu_pipe_tile_busy[tile]);
+    assign tile_write_pipe_conflict[tile] =
+        (array_tile_w_req.idx == mt_t'(tile)) && (|fpu_pipe_tile_busy[tile]);
   end
 
   assign tile_write_mac_conflict =
-      mac_pending_tiles[tile_w_req_i.idx];
+      mac_pending_tiles[array_tile_w_req.idx];
 
-  // When write-ready can be high, MAC conflicts and tile_rvalid_i are already excluded.
-  // For a matching VTZERO these are precisely the clean_acc_ready conditions, so no ready feedback is needed.
-  assign tile_write_zero_conflict = clean_req_valid && control_req.op_ope.is_zero_tile &&
-                                   clean_commit_ready && (control_req.mtd == tile_w_req_i.idx);
+  // When write-ready can be high, MAC and concurrent tile-read conflicts are excluded.
+  // For a matching VTZERO these are precisely the clean_acc_ready conditions,
+  // so no ready feedback is needed.
+  assign tile_write_zero_conflict = clean_req_valid && control_req.op_vme.is_zero_tile &&
+                                   clean_commit_ready && (control_req.mtd == array_tile_w_req.idx);
 
   assign tile_write_blocked = (|tile_write_pipe_conflict) ||
       tile_write_mac_conflict || tile_write_zero_conflict ||
-      (vt_busy_q && (vt_req_q.op_ope.tss.tile_id == tile_w_req_i.idx)) ||
+      (vt_busy_q && (vt_req_q.op_vme.tss.tile_id == array_tile_w_req.idx)) ||
       (tv_busy_q && tv_vrf_avail &&
-       (tv_req_q.op_ope.tss.tile_id == tile_w_req_i.idx));
+       (tv_req_q.op_vme.tss.tile_id == array_tile_w_req.idx));
   assign tile_read_blocked = (|tile_read_pipe_conflict) ||
       (tv_busy_q && tv_vrf_avail &&
-       (tv_req_q.op_ope.tss.tile_id == tile_r_req_i.idx));
+       (tv_req_q.op_vme.tss.tile_id == array_tile_r_req.idx));
+
+  tile_lsu #(
+    .NrMemPorts  (NrMemPorts),
+    .TileEdge   (TileEdge),
+    .AccWordBytes(AccWordBytes)
+  ) i_tile_lsu (
+    .clk_i,
+    .rst_ni,
+    .req_i               (tile_req),
+    .req_valid_i         (tile_cmd_valid),
+    .req_ready_o         (tile_cmd_ready),
+    .rsp_o               (tile_cmd_rsp),
+    .rsp_valid_o         (tile_cmd_rsp_valid),
+    .rsp_ready_i         (tile_cmd_rsp_ready),
+    .mem_finished_o      (tile_mem_finished_o),
+    .mem_store_finished_o(tile_mem_store_finished_o),
+    .mem_req_o           (tile_mem_req_o),
+    .mem_req_valid_o     (tile_mem_req_valid_o),
+    .mem_req_ready_i     (tile_mem_req_ready_i),
+    .mem_rsp_i           (tile_mem_rsp_i),
+    .mem_rsp_valid_i     (tile_mem_rsp_valid_i),
+    .tile_wvalid_o       (internal_tile_wvalid),
+    .tile_w_req_o        (internal_tile_w_req),
+    .tile_wready_i       (internal_tile_wready),
+    .tile_rvalid_o       (internal_tile_rvalid),
+    .tile_r_req_o        (internal_tile_r_req),
+    .tile_rdata_i        (internal_tile_rdata),
+    .tile_rready_i       (internal_tile_rready)
+  );
 
   /*------------------------------------------------------------*/
   /*            Distributed Accumulator Compute Array           */
@@ -630,20 +724,20 @@ module vme
     .tv_shape_i                (tv_shape_q),
     .tv_data_i                 (tv_vrf_data),
     .zero_tile_i               (clean_req_valid && clean_req_ready &&
-                                control_req.op_ope.is_zero_tile),
+                                control_req.op_vme.is_zero_tile),
     .discard_i                 (clean_req_valid && clean_req_ready &&
-                                control_req.op_ope.is_discard),
+                                control_req.op_vme.is_discard),
     .clean_tile_i              (control_req.mtd),
-    .clean_tew_i               (control_req.op_ope.tew),
-    .tile_wvalid_i,
-    .tile_w_req_i,
+    .clean_tew_i               (control_req.op_vme.tew),
+    .tile_wvalid_i            (array_tile_wvalid),
+    .tile_w_req_i             (array_tile_w_req),
     .tile_w_blocked_i          (tile_write_blocked),
-    .tile_wready_o,
-    .tile_rvalid_i,
-    .tile_r_req_i,
+    .tile_wready_o            (array_tile_wready),
+    .tile_rvalid_i            (array_tile_rvalid),
+    .tile_r_req_i             (array_tile_r_req),
     .tile_r_blocked_i          (tile_read_blocked),
-    .tile_rready_o,
-    .tile_rdata_o,
+    .tile_rready_o            (array_tile_rready),
+    .tile_rdata_o             (array_tile_rdata),
     .pipe_tile_busy_o          (fpu_pipe_tile_busy),
     .pipe_busy_o               (fpu_pipe_busy),
     .result_valid_o            (fpu_pipe_result_fire),
@@ -719,35 +813,39 @@ module vme
   );
 
   // Completion response arbitration.
-  response_t [3:0] arb_inp_data ;
-  logic     [3:0] arb_inp_valid;
-  logic     [3:0] arb_inp_ready;
+  response_t [4:0] arb_inp_data ;
+  logic     [4:0] arb_inp_valid;
+  logic     [4:0] arb_inp_ready;
 
-  typedef enum logic [1:0] {
+  typedef enum logic [2:0] {
     RSP_MAC,
     RSP_VT,
     RSP_TV,
-    RSP_SIMPLE
-  } ope_rsp_sel_e;
+    RSP_SIMPLE,
+    RSP_TILE_MEMORY
+  } vme_rsp_sel_e;
 
   assign arb_inp_data[RSP_MAC]    = mac_done_rsp;
   assign arb_inp_data[RSP_VT]     = vt_done_rsp;
   assign arb_inp_data[RSP_TV]     = tv_done_rsp;
   assign arb_inp_data[RSP_SIMPLE] = clean_done_rsp;
+  assign arb_inp_data[RSP_TILE_MEMORY] = tile_cmd_rsp;
 
   assign arb_inp_valid[RSP_MAC]    = mac_done_valid;
   assign arb_inp_valid[RSP_VT]     = vt_done_valid;
   assign arb_inp_valid[RSP_TV]     = tv_done_valid;
   assign arb_inp_valid[RSP_SIMPLE] = clean_done_valid;
+  assign arb_inp_valid[RSP_TILE_MEMORY] = tile_cmd_rsp_valid;
 
   assign mac_done_ready    = arb_inp_ready[RSP_MAC];
   assign vt_done_ready     = arb_inp_ready[RSP_VT];
   assign tv_done_ready     = arb_inp_ready[RSP_TV];
   assign clean_done_ready = arb_inp_ready[RSP_SIMPLE];
+  assign tile_cmd_rsp_ready = arb_inp_ready[RSP_TILE_MEMORY];
 
   stream_arbiter #(
     .DATA_T  (response_t),
-    .N_INP   (4        ),
+    .N_INP   (5        ),
     .ARBITER ("rr"     )
   ) i_rsp_arb (
     .clk_i       (clk_i           ),
@@ -762,7 +860,7 @@ module vme
 
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin : check_tile_rw_exclusive
-    if (rst_ni) assert (!(tile_rvalid_i && tile_wvalid_i))
+    if (rst_ni) assert (!(array_tile_rvalid && array_tile_wvalid))
       else $error("Tile read and write requested in the same cycle");
   end
 `endif

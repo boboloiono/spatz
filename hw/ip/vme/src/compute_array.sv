@@ -10,85 +10,81 @@ module compute_array
   import vme_pkg::*;
   import fpnew_pkg::*;
 #(
-  parameter int unsigned ComputeEdge = VME_COMPUTE_EDGE,
-  parameter int unsigned TileEdge = VME_TILE_EDGE,
-  parameter int unsigned AccWordWidth = VME_ACC_WORD_WIDTH,
-  parameter int unsigned AccWordBytes = AccWordWidth >> 3,
-  parameter int unsigned SpatialBeats = 4,
+  parameter int unsigned ComputeEdge       = VME_COMPUTE_EDGE,
+  parameter int unsigned TileEdge          = VME_TILE_EDGE,
+  parameter int unsigned AccWordWidth      = VME_ACC_WORD_WIDTH,
+  parameter int unsigned AccWordBytes      = AccWordWidth >> 3,
+  parameter int unsigned SpatialBeats      = 4,
   parameter int unsigned MaxVregGroupWords = VME_MAX_VREG_GROUP_WORDS,
-  parameter int unsigned NumPipeRegs = VME_FPU_PIPE_REGS,
-  parameter bit EnableFMA16 = VME_ENABLE_FMA16,
-  parameter bit EnableFMA32 = VME_ENABLE_FMA32
+  parameter int unsigned NumPipeRegs       = 4,
+  parameter bit          EnableFMA16       = VME_ENABLE_FMA16,
+  parameter bit          EnableFMA32       = VME_ENABLE_FMA32
 ) (
-  input logic clk_i,
-  input logic rst_ni,
-  input logic active_i,
+  input  logic                                    clk_i,
+  input  logic                                    rst_ni,
+  input  logic                                    active_i,
 
-  input logic compute_valid_i,
-  input instruction_id_t compute_id_i,
-  input mt_t compute_tile_i,
-  input logic [((SpatialBeats > 1) ? $clog2(SpatialBeats) : 1)-1:0]
-              compute_beat_i,
-  input logic compute_completion_i,
-  input logic compute_sdotp_i,
-  input vew_e compute_sew_i,
-  input vew_e compute_tew_i,
-  input logic [ComputeEdge-1:0][AccWordWidth-1:0] x_operand_i,
-  input logic [ComputeEdge-1:0][AccWordWidth-1:0] w_operand_i,
-  input logic [ComputeEdge-1:0][ComputeEdge-1:0] lane_active_i,
+  input  logic                                    compute_valid_i,
+  input  instruction_id_t                         compute_id_i,
+  input  mt_t                                     compute_tile_i,
+  input  logic [((SpatialBeats > 1) ? $clog2(SpatialBeats) : 1)-1:0] compute_beat_i,
+  input  logic                                    compute_completion_i,
+  input  logic                                    compute_sdotp_i,
+  input  vew_e                                    compute_sew_i,
+  input  vew_e                                    compute_tew_i,
+  input  logic [ComputeEdge-1:0][AccWordWidth-1:0] x_operand_i,
+  input  logic [ComputeEdge-1:0][AccWordWidth-1:0] w_operand_i,
+  input  logic [ComputeEdge-1:0][ComputeEdge-1:0] lane_active_i,
 
-  input request_t vt_req_i,
-  input logic vt_busy_i,
-  input logic [$clog2(MaxVregGroupWords)-1:0] vt_word_idx_i,
-  input move_shape_t vt_shape_i,
-  output vrf_data_t vt_data_o,
-  output vrf_be_t vt_be_o,
+  input  request_t                                vt_req_i,
+  input  logic                                    vt_busy_i,
+  input  logic [$clog2(MaxVregGroupWords)-1:0]    vt_word_idx_i,
+  input  move_shape_t                             vt_shape_i,
+  output vrf_data_t                               vt_data_o,
+  output vrf_be_t                                 vt_be_o,
 
-  input request_t tv_req_i,
-  input logic tv_write_i,
-  input logic [$clog2(MaxVregGroupWords)-1:0] tv_word_idx_i,
-  input move_shape_t tv_shape_i,
-  input vrf_data_t tv_data_i,
+  input  request_t                                tv_req_i,
+  input  logic                                    tv_write_i,
+  input  logic [$clog2(MaxVregGroupWords)-1:0]    tv_word_idx_i,
+  input  move_shape_t                             tv_shape_i,
+  input  vrf_data_t                               tv_data_i,
 
-  input logic zero_tile_i,
-  input logic discard_i,
-  input mt_t clean_tile_i,
-  input vew_e clean_tew_i,
+  input  logic                                    zero_tile_i,
+  input  logic                                    discard_i,
+  input  mt_t                                     clean_tile_i,
+  input  vew_e                                    clean_tew_i,
 
-  input logic tile_wvalid_i,
-  input tile_write_req_t tile_w_req_i,
-  input logic tile_w_blocked_i,
-  output logic tile_wready_o,
-  input logic tile_rvalid_i,
-  input tile_read_req_t tile_r_req_i,
-  input logic tile_r_blocked_i,
-  output logic tile_rready_o,
-  output tile_word_t tile_rdata_o,
+  input  logic                                    tile_wvalid_i,
+  input  tile_write_req_t                         tile_w_req_i,
+  input  logic                                    tile_w_blocked_i,
+  output logic                                    tile_wready_o,
+  input  logic                                    tile_rvalid_i,
+  input  tile_read_req_t                          tile_r_req_i,
+  input  logic                                    tile_r_blocked_i,
+  output logic                                    tile_rready_o,
+  output tile_word_t                              tile_rdata_o,
 
-  output logic [VME_NR_LOGICAL_TILES-1:0]
-               [SpatialBeats-1:0]
-               pipe_tile_busy_o,
-  output logic pipe_busy_o,
-  output logic result_valid_o,
-  output logic result_completion_o,
-  output instruction_id_t result_id_o,
-  output mt_t result_tile_o,
-  output logic [((SpatialBeats > 1) ? $clog2(SpatialBeats) : 1)-1:0]
-               result_beat_o
+  output logic [VME_NR_LOGICAL_TILES-1:0][SpatialBeats-1:0] pipe_tile_busy_o,
+  output logic                                    pipe_busy_o,
+  output logic                                    result_valid_o,
+  output logic                                    result_completion_o,
+  output instruction_id_t                         result_id_o,
+  output mt_t                                     result_tile_o,
+  output logic [((SpatialBeats > 1) ? $clog2(SpatialBeats) : 1)-1:0] result_beat_o
 );
 
-  localparam int unsigned EdgeBeats = TileEdge / ComputeEdge;
-  localparam int unsigned AccMaskWidth = AccWordBytes;
-  localparam int unsigned EdgeBeatW = EdgeBeats > 1 ? $clog2(EdgeBeats) : 1;
-  localparam int unsigned SpatialBeatW = SpatialBeats > 1 ? $clog2(SpatialBeats) : 1;
+  localparam int unsigned EdgeBeats        = TileEdge / ComputeEdge;
+  localparam int unsigned AccMaskWidth     = AccWordBytes;
+  localparam int unsigned EdgeBeatW        = EdgeBeats > 1 ? $clog2(EdgeBeats) : 1;
+  localparam int unsigned SpatialBeatW     = SpatialBeats > 1 ? $clog2(SpatialBeats) : 1;
   localparam int unsigned NrAccBankedTiles = VME_NR_LOGICAL_TILES / AccWordBytes;
-  localparam int unsigned AccDepth = NrAccBankedTiles * SpatialBeats;
-  localparam int unsigned AccAddrW = AccDepth > 1 ? $clog2(AccDepth) : 1;
-  localparam int unsigned AccTileIdxW = NrAccBankedTiles > 1 ?
-      $clog2(NrAccBankedTiles) : 1;
-  localparam int unsigned AccByteIdxW = AccWordBytes > 1 ? $clog2(AccWordBytes) : 1;
+  localparam int unsigned AccDepth         = NrAccBankedTiles * SpatialBeats;
+  localparam int unsigned AccAddrW         = AccDepth > 1 ? $clog2(AccDepth) : 1;
+  localparam int unsigned AccTileIdxW      = NrAccBankedTiles > 1 ?
+                                              $clog2(NrAccBankedTiles) : 1;
+  localparam int unsigned AccByteIdxW      = AccWordBytes > 1 ? $clog2(AccWordBytes) : 1;
 
-  typedef logic [$clog2((TileEdge<<1)+1)-1:0] tile_sum_t;
+  typedef logic [$clog2((TileEdge << 1) + 1)-1:0] tile_sum_t;
   typedef struct packed {
     logic [AccTileIdxW-1:0] tile;
     logic [AccByteIdxW-1:0] byte_offset;
@@ -231,18 +227,18 @@ module compute_array
     int unsigned vt_tew_bytes, tv_tew_bytes;
     int unsigned tile_r_tew_bytes, tile_w_tew_bytes, clean_tew_bytes;
 
-    vt_tew_bytes = 1 << int'(vt_req_i.op_ope.tew);
-    tv_tew_bytes = 1 << int'(tv_req_i.op_ope.tew);
+    vt_tew_bytes = 1 << int'(vt_req_i.op_vme.tew);
+    tv_tew_bytes = 1 << int'(tv_req_i.op_vme.tew);
     tile_r_tew_bytes = 1 << int'(tile_r_req_i.tew);
     tile_w_tew_bytes = 1 << int'(tile_w_req_i.tew);
     clean_tew_bytes = 1 << int'(clean_tew_i);
 
-    vt_acc_sel.tile = AccTileIdxW'(vt_req_i.op_ope.tss.tile_id / AccWordBytes);
-    vt_acc_sel.byte_offset = AccByteIdxW'(vt_req_i.op_ope.tss.tile_id % AccWordBytes);
+    vt_acc_sel.tile = AccTileIdxW'(vt_req_i.op_vme.tss.tile_id / AccWordBytes);
+    vt_acc_sel.byte_offset = AccByteIdxW'(vt_req_i.op_vme.tss.tile_id % AccWordBytes);
     vt_acc_sel.mask_enable = '0;
 
-    tv_acc_sel.tile = AccTileIdxW'(tv_req_i.op_ope.tss.tile_id / AccWordBytes);
-    tv_acc_sel.byte_offset = AccByteIdxW'(tv_req_i.op_ope.tss.tile_id % AccWordBytes);
+    tv_acc_sel.tile = AccTileIdxW'(tv_req_i.op_vme.tss.tile_id / AccWordBytes);
+    tv_acc_sel.byte_offset = AccByteIdxW'(tv_req_i.op_vme.tss.tile_id % AccWordBytes);
     tv_acc_sel.mask_enable = '0;
 
     tile_r_acc_sel.tile = AccTileIdxW'(tile_r_req_i.idx / AccWordBytes);
@@ -287,12 +283,12 @@ module compute_array
     mover_acc_raddr = '0;
     edge_row = '0;
     line_word_idx = '0;
-    tew_bytes = 1 << int'(vt_req_i.op_ope.tew);
+    tew_bytes = 1 << int'(vt_req_i.op_vme.tew);
     elems_per_word = VME_VRF_WORD_BYTES / tew_bytes;
     if (vt_busy_i) begin
       line_word_idx = tile_dim_t'(vt_word_idx_i);
-      edge_row = vt_req_i.op_ope.tss.is_row ?
-          EdgeBeatW'(vt_req_i.op_ope.tss.index / ComputeEdge) :
+      edge_row = vt_req_i.op_vme.tss.is_row ?
+          EdgeBeatW'(vt_req_i.op_vme.tss.index / ComputeEdge) :
           EdgeBeatW'((line_word_idx * elems_per_word) / ComputeEdge);
       mover_acc_raddr = AccAddrW'(vt_acc_sel.tile * SpatialBeats + edge_row * EdgeBeats);
     end
@@ -311,7 +307,7 @@ module compute_array
     elem_idx = '0;
     flat_elem_idx = '0;
     line_word_idx = tile_dim_t'(vt_word_idx_i);
-    tew_bytes = 1 << int'(vt_req_i.op_ope.tew);
+    tew_bytes = 1 << int'(vt_req_i.op_vme.tew);
     elems_per_word = VME_VRF_WORD_BYTES / tew_bytes;
 
     if (vt_busy_i) begin
@@ -323,12 +319,12 @@ module compute_array
             (elem_idx < vt_shape_i.line_elems) &&
             (lane < elems_per_word)) begin
           logic [AccWordWidth-1:0] acc_word;
-          if (vt_req_i.op_ope.tss.is_row) begin
-            row_i = vt_req_i.op_ope.tss.index;
+          if (vt_req_i.op_vme.tss.is_row) begin
+            row_i = vt_req_i.op_vme.tss.index;
             col_i = elem_idx[$clog2(TileEdge)-1:0];
           end else begin
             row_i = elem_idx[$clog2(TileEdge)-1:0];
-            col_i = vt_req_i.op_ope.tss.index;
+            col_i = vt_req_i.op_vme.tss.index;
           end
           acc_word = mover_acc_rdata[row_i % ComputeEdge][col_i % ComputeEdge]
                                       [col_i / ComputeEdge];
@@ -362,12 +358,12 @@ module compute_array
     idx = '0;
     edge_row = '0;
     line_word_idx = tile_dim_t'(tv_word_idx_i);
-    tew_bytes = 1 << int'(tv_req_i.op_ope.tew);
+    tew_bytes = 1 << int'(tv_req_i.op_vme.tew);
     elems_per_word = VME_VRF_WORD_BYTES / tew_bytes;
 
     if (tv_write_i) begin
-      idx = tv_req_i.op_ope.tss.index;
-      edge_row = tv_req_i.op_ope.tss.is_row ?
+      idx = tv_req_i.op_vme.tss.index;
+      edge_row = tv_req_i.op_vme.tss.is_row ?
           EdgeBeatW'(idx / ComputeEdge) :
           EdgeBeatW'((line_word_idx * elems_per_word) / ComputeEdge);
       mover_acc_waddr = AccAddrW'(tv_acc_sel.tile * SpatialBeats + edge_row * EdgeBeats);
@@ -377,7 +373,7 @@ module compute_array
           for (int beat = 0; beat < EdgeBeats; beat++) begin
             int unsigned dest_elem, source_lane;
             logic dest_match;
-            if (tv_req_i.op_ope.tss.is_row) begin
+            if (tv_req_i.op_vme.tss.is_row) begin
               dest_elem = beat * ComputeEdge + col;
               dest_match = (unsigned'(idx) % ComputeEdge) == row;
             end else begin
@@ -408,34 +404,86 @@ module compute_array
     end
   end
 
-  tile_lsu #(
-    .ComputeEdge  (ComputeEdge),
-    .TileEdge     (TileEdge),
-    .AccWordWidth (AccWordWidth),
-    .AccWordBytes (AccWordBytes),
-    .AccMaskWidth (AccMaskWidth)
-  ) i_tile_lsu (
-    .tile_wvalid_i,
-    .tile_w_req_i,
-    .tile_w_blocked_i,
-    .tile_wready_o,
-    .tile_rvalid_i,
-    .tile_r_req_i,
-    .tile_r_blocked_i,
-    .tile_rready_o,
-    .tile_rdata_o,
-    .read_tile_i         (tile_r_acc_sel.tile),
-    .read_byte_offset_i  (tile_r_acc_sel.byte_offset),
-    .write_tile_i        (tile_w_acc_sel.tile),
-    .write_byte_offset_i (tile_w_acc_sel.byte_offset),
-    .write_mask_i        (tile_w_acc_sel.mask_enable),
-    .zero_i              (acc_zero_q),
-    .acc_raddr_o         (tile_acc_raddr),
-    .acc_rdata_i         (tile_acc_rdata),
-    .acc_waddr_o         (tile_acc_waddr),
-    .acc_wdata_o         (tile_acc_wdata),
-    .acc_wen_o           (tile_acc_wen)
-  );
+  // Keep physical bank selection and tile-word gather/scatter beside the
+  // distributed accumulators. The Tile LSU only sees the compact tile-word
+  // protocol and remains independent of the compute-array organization.
+  assign tile_wready_o = !tile_w_blocked_i;
+  assign tile_rready_o = !tile_r_blocked_i;
+
+  always_comb begin : tile_accumulator_access
+    logic [EdgeBeatW-1:0] write_edge_row, read_edge_row, selected_edge_row;
+    logic [AccTileIdxW-1:0] selected_tile;
+    int unsigned write_tew_bytes, read_tew_bytes;
+
+    write_tew_bytes = 1 << int'(tile_w_req_i.tew);
+    read_tew_bytes = 1 << int'(tile_r_req_i.tew);
+    write_edge_row = EdgeBeatW'(tile_w_req_i.row / ComputeEdge);
+    read_edge_row = EdgeBeatW'(tile_r_req_i.row / ComputeEdge);
+    selected_edge_row = tile_wvalid_i ? write_edge_row : read_edge_row;
+    selected_tile = tile_wvalid_i ? tile_w_acc_sel.tile : tile_r_acc_sel.tile;
+
+    tile_acc_raddr = AccAddrW'(selected_tile * SpatialBeats +
+                               selected_edge_row * EdgeBeats);
+    tile_acc_waddr = tile_acc_raddr;
+    tile_acc_wdata = '0;
+    tile_acc_wen = '0;
+    tile_rdata_o = '0;
+
+    if (tile_wvalid_i) begin
+      for (int row = 0; row < ComputeEdge; row++) begin
+        for (int col = 0; col < ComputeEdge; col++) begin
+          for (int beat = 0; beat < EdgeBeats; beat++) begin
+            int unsigned dest_col;
+            int unsigned source_elem;
+            dest_col = beat * ComputeEdge + col;
+            source_elem = dest_col - unsigned'(tile_w_req_i.col);
+            if ((unsigned'(tile_w_req_i.row) % ComputeEdge == row) &&
+                (dest_col >= unsigned'(tile_w_req_i.col)) &&
+                (source_elem < unsigned'(tile_w_req_i.elems))) begin
+              for (int unsigned elem_byte = 0;
+                   elem_byte < AccWordBytes; elem_byte++) begin
+                if (elem_byte < write_tew_bytes)
+                  tile_acc_wdata[row][col][beat]
+                      [((unsigned'(tile_w_acc_sel.byte_offset) + elem_byte) <<
+                        3) +: 1 << 3] =
+                      tile_w_req_i.data[((source_elem * write_tew_bytes +
+                                          elem_byte) << 3) +: 1 << 3];
+              end
+              if (tile_wready_o)
+                tile_acc_wen[row][col][beat] = tile_w_acc_sel.mask_enable;
+            end
+          end
+        end
+      end
+    end
+
+    for (int unsigned elem_idx = 0; elem_idx < TileEdge; elem_idx++) begin
+      if (elem_idx < unsigned'(tile_r_req_i.elems)) begin
+        logic [$clog2(ComputeEdge)-1:0] bank_col;
+        logic [EdgeBeatW-1:0] edge_col;
+        logic [AccWordWidth-1:0] acc_word;
+        tile_dim_t col_i;
+        col_i = tile_dim_t'(tile_r_req_i.col + tile_dim_t'(elem_idx));
+        bank_col = $clog2(ComputeEdge)'(col_i % ComputeEdge);
+        edge_col = EdgeBeatW'(col_i / ComputeEdge);
+        acc_word = tile_acc_rdata[tile_r_req_i.row % ComputeEdge]
+                                   [bank_col][edge_col];
+        for (int unsigned mask_idx = 0; mask_idx < AccMaskWidth; mask_idx++)
+          if (acc_zero_q[tile_r_acc_sel.tile]
+                        [read_edge_row * EdgeBeats + edge_col]
+                        [tile_r_req_i.row % ComputeEdge][bank_col][mask_idx])
+            acc_word[(mask_idx << 3) +: 1 << 3] = '0;
+        for (int unsigned elem_byte = 0;
+             elem_byte < AccWordBytes; elem_byte++) begin
+          if (elem_byte < read_tew_bytes)
+            tile_rdata_o[((elem_idx * read_tew_bytes + elem_byte) <<
+                          3) +: 1 << 3] =
+                acc_word[((unsigned'(tile_r_acc_sel.byte_offset) +
+                           elem_byte) << 3) +: 1 << 3];
+        end
+      end
+    end
+  end
 
   always_comb begin : zero_metadata_update
     acc_zero_d = acc_zero_q;

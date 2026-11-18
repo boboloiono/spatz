@@ -38,7 +38,7 @@ runtime state derived from the LMUL selected by `msetmtype`.
 `src/vme_pkg.sv` owns the command, completion, VRF, and tile-memory types.
 `src/vme.sv` does not import
 `spatz_pkg` or `rvv_pkg`. The adapter at
-`hw/ip/spatz/src/ope/spatz_ope.sv` translates decoded Spatz requests into the
+`hw/ip/spatz/src/spatz_vme.sv` translates decoded Spatz requests into the
 smaller VME command and converts the completion and tile-transfer channels
 back to Spatz types. Elaboration-time checks reject mismatched architectural
 or integration contracts before simulation.

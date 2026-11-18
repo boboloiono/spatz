@@ -48,7 +48,7 @@ uses its widening FP16 GEMM mode and writes FP32 output directly.
 VME supports exact runtime matrix shapes through `tm`, `tn`, and `tk`; the
 software does not need to pad each tile to 16x16x16. The controller clamps the
 requested dimensions to the implemented limits and forwards them with every
-OPE request. In the OPE MAC scheduler:
+VME request. In the VME MAC scheduler:
 
 - `tm` and `tn` determine how many spatial groups are issued and generate a
   per-lane `mac_lane_active` mask for a partial edge tile.
@@ -59,7 +59,7 @@ OPE request. In the OPE MAC scheduler:
   makes no arithmetic contribution.
 - A zero `tm`, `tn`, or `tk` is treated as an empty MAC operation.
 
-This behavior is implemented in `spatz_controller.sv`, `spatz_ope.sv`, and
+This behavior is implemented in `spatz_controller.sv`, `spatz_vme.sv`, and
 `opope_accumulator.sv`. It explains why the VME kernels can execute a logical
 M13xN11xK19 job directly, whereas the current loosely coupled O-POPE interface
 executes the padded M16xN16xK20 job.

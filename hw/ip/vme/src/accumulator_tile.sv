@@ -5,8 +5,7 @@
 // Author: Danilo Cammarata, ETH Zürich
 // Author: Pei-Yu Lin, ETH Zürich
 
-module accumulator_tile
-#(
+module accumulator_tile #(
   parameter int unsigned AccWordWidth = vme_pkg::VME_ACC_WORD_WIDTH,
   parameter int unsigned AccWordBytes = AccWordWidth >> 3,
   parameter int unsigned AccMaskWidth = AccWordBytes,
@@ -15,31 +14,29 @@ module accumulator_tile
   parameter int unsigned AccReadPorts  = 2,
   parameter int unsigned AccWritePorts = 2
 ) (
-  input  logic                                clk_i              ,
-  // interface with FPU Array within OPE
-  input  logic [AccWordWidth-1:0]             fpu_wdata_i        ,
-  input  logic [AccMaskWidth-1:0]             fpu_wen_i,
-  input  logic [AccAddrWidth-1:0]              fpu_waddr_i        ,
-  input  logic [AccAddrWidth-1:0]              fpu_raddr_i        ,
-  output logic [AccWordWidth-1:0]             fpu_rdata_o        ,
-  // interface with VRF
-  input  logic [AccWritePorts-1:0][AccWordWidth-1:0] vrf_wdata_i  ,
-  input  logic [AccWritePorts-1:0]
-               [AccMaskWidth-1:0] vrf_wen_i,
-  input  logic [AccAddrWidth-1:0]              vrf_waddr_i        ,
-  input  logic [AccAddrWidth-1:0]              vrf_raddr_i        ,
-  output logic [AccReadPorts-1:0][AccWordWidth-1:0] vrf_rdata_o   ,
-  // interface with VLSU
-  input  logic [AccWritePorts-1:0][AccWordWidth-1:0] vlsu_wdata_i ,
-  input  logic [AccWritePorts-1:0]
-               [AccMaskWidth-1:0] vlsu_wen_i,
-  input  logic [AccAddrWidth-1:0]              vlsu_waddr_i       ,
-  input  logic [AccAddrWidth-1:0]              vlsu_raddr_i       ,
+  input  logic                                         clk_i,
+  // Interface with the VME compute array.
+  input  logic [AccWordWidth-1:0]              fpu_wdata_i,
+  input  logic [AccMaskWidth-1:0]              fpu_wen_i,
+  input  logic [AccAddrWidth-1:0]              fpu_waddr_i,
+  input  logic [AccAddrWidth-1:0]              fpu_raddr_i,
+  output logic [AccWordWidth-1:0]              fpu_rdata_o,
+  // Interface with the VRF mover.
+  input  logic [AccWritePorts-1:0][AccWordWidth-1:0] vrf_wdata_i,
+  input  logic [AccWritePorts-1:0][AccMaskWidth-1:0] vrf_wen_i,
+  input  logic [AccAddrWidth-1:0]              vrf_waddr_i,
+  input  logic [AccAddrWidth-1:0]              vrf_raddr_i,
+  output logic [AccReadPorts-1:0][AccWordWidth-1:0] vrf_rdata_o,
+  // Interface with the Tile LSU.
+  input  logic [AccWritePorts-1:0][AccWordWidth-1:0] vlsu_wdata_i,
+  input  logic [AccWritePorts-1:0][AccMaskWidth-1:0] vlsu_wen_i,
+  input  logic [AccAddrWidth-1:0]              vlsu_waddr_i,
+  input  logic [AccAddrWidth-1:0]              vlsu_raddr_i,
   output logic [AccReadPorts-1:0][AccWordWidth-1:0] vlsu_rdata_o
 );
 
   localparam int unsigned AccWritePortIdxWidth = $clog2(AccWritePorts);
-  localparam int unsigned AccReadPortIdxWidth = $clog2(AccReadPorts);
+  localparam int unsigned AccReadPortIdxWidth  = $clog2(AccReadPorts);
 
   logic [AccDepth-1:0][AccWordWidth-1:0] acc_mem;
   logic [AccAddrWidth-1:0] vrf_waddr_base, vrf_raddr_base;
@@ -86,7 +83,7 @@ module accumulator_tile
   assign vlsu_rdata_o = acc_mem[vlsu_raddr_base +: AccReadPorts];
 
   // The data array deliberately has no reset or global clear.  Reset/discard/VTZERO
-  // are represented by granule-level zero metadata in spatz_ope.  Physically
+  // are represented by granule-level zero metadata in the VME. Physically
   // clearing this array created a single control net driving every accumulator bit
   // and its clock gate, which is both unnecessary and a severe timing bottleneck.
   always_ff @(posedge clk_i) begin

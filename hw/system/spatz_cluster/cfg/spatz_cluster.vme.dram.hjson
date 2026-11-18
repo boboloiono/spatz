@@ -34,6 +34,7 @@
         "spatz_nports": 8,
         "double_bw": 1,
         "buf_fpu": 1,
+        "vme": true,
         // Timing parameters
         "timing": {
             "lat_comp_fp32": 1,
